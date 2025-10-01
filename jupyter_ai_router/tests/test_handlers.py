@@ -1,13 +1,13 @@
-import json
+"""
+Tests for extension handlers (currently none).
 
+This extension provides server-side functionality only
+and does not expose HTTP endpoints.
+"""
 
-async def test_get_example(jp_fetch):
-    # When
-    response = await jp_fetch("jupyter-ai-router", "get-example")
-
-    # Then
-    assert response.code == 200
-    payload = json.loads(response.body)
-    assert payload == {
-        "data": "This is /jupyter-ai-router/get-example endpoint!"
-    }
+def test_no_handlers():
+    """Test that extension loads without HTTP handlers."""
+    from jupyter_ai_router.extension import RouterExtension
+    
+    ext = RouterExtension()
+    assert ext.handlers == []
