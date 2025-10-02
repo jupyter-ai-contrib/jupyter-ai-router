@@ -99,7 +99,7 @@ class RouterExtension(ExtensionApp):
             self.log.error(f"Error getting chat document for {room_id}: {e}")
             return None
 
-    def stop_extension(self):
+    async def stop_extension(self):
         """Clean up router when extension stops."""
         try:
             if hasattr(self, "router"):
