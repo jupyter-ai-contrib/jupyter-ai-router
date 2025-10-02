@@ -13,7 +13,7 @@ This extension provides the foundational message routing functionality for Jupyt
 ```python
 # The router is available in other extensions via settings
 router = self.serverapp.web_app.settings.get("jupyter-ai", {}).get("router")
-    
+
 # Register callbacks for different event types
 def on_new_chat(room_id: str, ychat: YChat):
     print(f"New chat connected: {room_id}")
