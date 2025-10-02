@@ -11,9 +11,9 @@ This extension provides the foundational message routing functionality for Jupyt
 ### Basic MessageRouter Setup
 
 ```python
-# The router is automatically available in other extensions via settings
-router = self.settings['jupyter-ai']['router']
-
+# The router is available in other extensions via settings
+router = self.serverapp.web_app.settings.get("jupyter-ai", {}).get("router")
+    
 # Register callbacks for different event types
 def on_new_chat(room_id: str, ychat: YChat):
     print(f"New chat connected: {room_id}")
@@ -21,7 +21,7 @@ def on_new_chat(room_id: str, ychat: YChat):
 def on_slash_command(room_id: str, message: Message):
     print(f"Slash command in {room_id}: {message.body}")
 
-def on_regular_message(room_id: str, message: Message):
+def on_regular_message(room_id: str, message: Message):`
     print(f"Regular message in {room_id}: {message.body}")
 
 # Register the callbacks
@@ -42,26 +42,6 @@ router.observe_chat_msg("room-id", on_regular_message)
 - `observe_chat_init(callback)` - Called when new chat sessions are initialized with `(room_id, ychat)`
 - `observe_slash_cmd_msg(room_id, callback)` - Called for messages starting with `/` in a specific room
 - `observe_chat_msg(room_id, callback)` - Called for regular (non-slash) messages in a specific room
-- `connect_chat(room_id, ychat)` - Manually connect a chat (usually automatic)
-- `disconnect_chat(room_id)` - Disconnect a chat session
-- `cleanup()` - Clean up all resources when shutting down
-
-## QUICK START
-
-Everything that follows after this section was from the extension template. We
-will need to revise the rest of this README.
-
-Development install:
-
-```
-micromamba install uv jupyterlab nodejs=22
-jlpm
-jlpm dev:install
-```
-
-## Requirements
-
-- JupyterLab >= 4.0.0
 
 ## Install
 
