@@ -15,7 +15,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
   activate: (app: JupyterFrontEnd) => {
     console.log('JupyterLab extension @jupyter-ai/router is activated!');
 
-    requestAPI<any>('get-example')
+    requestAPI<any>('health')
       .then(data => {
         console.log(data);
       })
