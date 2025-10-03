@@ -3,7 +3,10 @@ Utility functions for message routing.
 """
 
 
-def get_first_word(input_str: str) -> str | None:
+from typing import Optional
+
+
+def get_first_word(input_str: str) -> Optional[str]:
     """
     Finds the first word in a given string, ignoring leading whitespace.
 
