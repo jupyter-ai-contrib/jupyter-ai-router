@@ -32,6 +32,7 @@ This is `jupyter_ai_router`, a core message routing layer for Jupyter AI. It's a
 ## Development Commands
 
 ### Initial Setup
+
 ```bash
 # Install development dependencies
 jlpm
@@ -47,6 +48,7 @@ jupyter server extension enable jupyter_ai_router
 ```
 
 ### Building
+
 ```bash
 # Build TypeScript and JupyterLab extension (development)
 jlpm build
@@ -59,6 +61,7 @@ jlpm watch
 ```
 
 ### Testing
+
 ```bash
 # Run Python tests with coverage
 pytest -vv -r ap --cov jupyter_ai_router
@@ -71,6 +74,7 @@ cd ui-tests && jlpm test
 ```
 
 ### Code Quality
+
 ```bash
 # Run all linting and formatting
 jlpm lint
@@ -85,6 +89,7 @@ jlpm stylelint       # Fix CSS issues
 ```
 
 ### Development Workflow
+
 ```bash
 # Clean build artifacts
 jlpm clean:all
@@ -99,6 +104,7 @@ jlpm dev:uninstall
 ## Code Style
 
 ### TypeScript/JavaScript
+
 - Single quotes for strings
 - No trailing commas
 - Arrow functions preferred
@@ -106,6 +112,7 @@ jlpm dev:uninstall
 - 2-space indentation
 
 ### Python
+
 - Follow standard Python conventions
 - Use type hints where appropriate
 - Inherit from `LoggingConfigurable` for components that need logging
