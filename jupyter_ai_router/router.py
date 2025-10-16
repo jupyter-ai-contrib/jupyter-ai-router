@@ -21,6 +21,23 @@ if TYPE_CHECKING:
 from .utils import get_first_word
 
 
+def matches_pattern(word: str, pattern: str) -> bool:
+    """
+    Check if a word matches a regex pattern.
+
+    Args:
+        word: The word to match (e.g., "help", "ai-generate")
+        pattern: The regex pattern to match against (e.g., "help", "ai-.*", "export-(json|csv)")
+
+    Returns:
+        True if the word matches the pattern
+    """
+    try:
+        return bool(re.match(f"^{pattern}$", word))
+    except re.error:
+        return False
+
+
 class MessageRouter(LoggingConfigurable):
     """
     Router that manages ychat message routing.
@@ -63,10 +80,11 @@ class MessageRouter(LoggingConfigurable):
 
         Args:
             room_id: The chat room ID
-            command_pattern: Command pattern to match (without leading slash). Supports:
+            command_pattern: Regex pattern to match commands (without leading slash).
+                Examples:
                 - Exact match: "help" matches "/help"
-                - Wildcard: "ai-*" matches "/ai-generate", "/ai-review", etc.
-                - Regex: Any valid Python regex pattern like "export-(json|csv)"
+                - Pattern match: "ai-.*" matches "/ai-generate", "/ai-review", etc.
+                - Multiple options: "export-(json|csv)" matches "/export-json", "/export-csv"
             callback: Function called with (room_id: str, command: str, message: Message) for matching commands
         """
         if room_id not in self.slash_cmd_observers:
@@ -171,63 +189,25 @@ class MessageRouter(LoggingConfigurable):
             parts = message.body.split(None, 1)  # Split into max 2 parts
             command = parts[0] if parts else ""
             trimmed_body = parts[1] if len(parts) > 1 else ""
-            
+
             # Create a copy of the message with trimmed body (command removed)
             trimmed_message = replace(message, body=trimmed_body)
-            
+
             # Remove forward slash from command for cleaner API
             clean_command = command[1:] if command.startswith("/") else command
-            
+
             # Route to slash command observers
-            self._notify_slash_cmd_observers(room_id, trimmed_message, command, clean_command)
+            self._notify_slash_cmd_observers(room_id, trimmed_message, clean_command)
         else:
             self._notify_msg_observers(room_id, message)
 
-    def _command_matches(self, command: str, pattern: str) -> bool:
-        """
-        Check if a command matches a pattern.
-        
-        Args:
-            command: The actual command with slash (e.g., "/help")
-            pattern: The pattern to match against without slash (e.g., "help", "ai-*", regex)
-            
-        Returns:
-            True if the command matches the pattern
-        """
-        # Convert pattern to include slash for matching
-        # Pattern "help" should match command "/help"
-        if not pattern.startswith("/"):
-            full_pattern = "/" + pattern
-        else:
-            # Handle case where pattern accidentally includes slash
-            full_pattern = pattern
-            
-        # Exact match
-        if command == full_pattern:
-            return True
-            
-        # Wildcard pattern (convert to regex)
-        if "*" in full_pattern:
-            # Escape special regex chars except *, then convert * to .*
-            escaped_pattern = re.escape(full_pattern).replace(r"\*", ".*")
-            regex_pattern = f"^{escaped_pattern}$"
-            try:
-                return bool(re.match(regex_pattern, command))
-            except re.error:
-                return False
-        
-        # Try as regex pattern (add slash if not present)
-        try:
-            return bool(re.match(full_pattern, command))
-        except re.error:
-            return False
 
-    def _notify_slash_cmd_observers(self, room_id: str, message: Message, original_command: str, clean_command: str) -> None:
+    def _notify_slash_cmd_observers(self, room_id: str, message: Message, clean_command: str) -> None:
         """Notify observers registered for slash commands."""
         room_observers = self.slash_cmd_observers.get(room_id, {})
-        
+
         for registered_pattern, callbacks in room_observers.items():
-            if self._command_matches(original_command, registered_pattern):
+            if matches_pattern(clean_command, registered_pattern):
                 for callback in callbacks:
                     try:
                         callback(room_id, clean_command, message)

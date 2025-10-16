@@ -45,16 +45,16 @@ router.observe_chat_msg("room-id", on_regular_message)
 
 ### Command Pattern Matching
 
-The `observe_slash_cmd_msg` method supports flexible command pattern matching:
+The `observe_slash_cmd_msg` method supports regex pattern matching:
 
 ```python
 # Exact match: Only matches "/help"
 router.observe_slash_cmd_msg("room-id", "help", callback)
 
-# Wildcard match: Matches "/ai-generate", "/ai-review", etc.
-router.observe_slash_cmd_msg("room-id", "ai-*", callback)
+# Regex pattern: Matches "/ai-generate", "/ai-review", etc.
+router.observe_slash_cmd_msg("room-id", "ai-.*", callback)
 
-# Regex pattern: Matches "/export-json", "/export-csv", "/export-xml"
+# Regex with groups: Matches "/export-json", "/export-csv", "/export-xml"
 router.observe_slash_cmd_msg("room-id", r"export-(json|csv|xml)", callback)
 ```
 

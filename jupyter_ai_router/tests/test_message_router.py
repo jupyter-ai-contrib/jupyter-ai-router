@@ -6,7 +6,7 @@ import pytest
 from unittest.mock import Mock, MagicMock
 from jupyterlab_chat.models import Message
 from jupyterlab_chat.ychat import YChat
-from jupyter_ai_router.router import MessageRouter
+from jupyter_ai_router.router import MessageRouter, matches_pattern
 from jupyter_ai_router.utils import get_first_word, is_persona
 
 
@@ -131,34 +131,27 @@ class TestMessageRouter:
         assert len(self.router.slash_cmd_observers) == 0
         assert len(self.router.chat_msg_observers) == 0
 
-    def test_observe_slash_cmd_patterns(self):
-        """Test registering specific slash command callback with patterns."""
-        room_id = "test-room"
-        command_pattern = "help"
-        self.router.observe_slash_cmd_msg(room_id, command_pattern, self.mock_specific_cmd_callback)
-        
-        assert command_pattern in self.router.slash_cmd_observers[room_id]
-        assert self.mock_specific_cmd_callback in self.router.slash_cmd_observers[room_id][command_pattern]
 
-    def test_command_matches_exact(self):
+    def test_matches_pattern_exact(self):
         """Test exact command matching."""
-        assert self.router._command_matches("/help", "help") is True
-        assert self.router._command_matches("/help", "status") is False
+        assert matches_pattern("help", "help") is True
+        assert matches_pattern("help", "status") is False
 
-    def test_command_matches_wildcard(self):
-        """Test wildcard command matching."""
-        assert self.router._command_matches("/ai-generate", "ai-*") is True
-        assert self.router._command_matches("/ai-review", "ai-*") is True
-        assert self.router._command_matches("/help", "ai-*") is False
-        assert self.router._command_matches("/export-csv", "export-*") is True
+    def test_matches_pattern_regex(self):
+        """Test regex pattern matching."""
+        # Pattern with .* (formerly wildcard)
+        assert matches_pattern("ai-generate", "ai-.*") is True
+        assert matches_pattern("ai-review", "ai-.*") is True
+        assert matches_pattern("help", "ai-.*") is False
+        assert matches_pattern("export-csv", "export-.*") is True
 
-    def test_command_matches_regex(self):
-        """Test regex command matching."""
+    def test_matches_pattern_regex_groups(self):
+        """Test regex command matching with groups."""
         pattern = r"export-(json|csv|xml)"
-        assert self.router._command_matches("/export-json", pattern) is True
-        assert self.router._command_matches("/export-csv", pattern) is True
-        assert self.router._command_matches("/export-xml", pattern) is True
-        assert self.router._command_matches("/export-pdf", pattern) is False
+        assert matches_pattern("export-json", pattern) is True
+        assert matches_pattern("export-csv", pattern) is True
+        assert matches_pattern("export-xml", pattern) is True
+        assert matches_pattern("export-pdf", pattern) is False
 
     def test_specific_command_routing_exact(self):
         """Test routing of specific slash commands with exact match."""
@@ -183,10 +176,10 @@ class TestMessageRouter:
         self.router._route_message(room_id, status_msg)
         self.mock_specific_cmd_callback.assert_not_called()
 
-    def test_specific_command_routing_wildcard(self):
-        """Test routing of specific slash commands with wildcard pattern."""
+    def test_specific_command_routing_regex(self):
+        """Test routing of specific slash commands with regex pattern."""
         room_id = "test-room"
-        self.router.observe_slash_cmd_msg(room_id, "ai-*", self.mock_specific_cmd_callback)
+        self.router.observe_slash_cmd_msg(room_id, "ai-.*", self.mock_specific_cmd_callback)
         
         # Test matching commands
         generate_msg = Message(id="1", body="/ai-generate code", sender="user", time=123)
@@ -267,7 +260,7 @@ class TestMessageRouter:
         export_callback = Mock()
         
         self.router.observe_slash_cmd_msg(room_id, "help", help_callback)
-        self.router.observe_slash_cmd_msg(room_id, "export-*", export_callback)
+        self.router.observe_slash_cmd_msg(room_id, "export-.*", export_callback)
         
         help_msg = Message(id="1", body="/help topic", sender="user", time=123)
         self.router._route_message(room_id, help_msg)
@@ -304,7 +297,7 @@ class TestMessageRouter:
     def test_invalid_regex_pattern(self):
         """Test handling of invalid regex patterns."""
         # Invalid regex should not match anything
-        assert self.router._command_matches("/help", "[invalid") is False
+        assert matches_pattern("help", "[invalid") is False
 
     def test_message_trimming_and_command_cleaning(self):
         """Test that messages are properly trimmed and commands cleaned."""
