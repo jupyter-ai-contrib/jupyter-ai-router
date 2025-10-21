@@ -123,6 +123,8 @@ dmypy.json
 
 # Yarn cache
 .yarn/
+*.chat
+.jupyter_ystore.db
 
 # For local testing
 playground/
