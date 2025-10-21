@@ -125,3 +125,6 @@ dmypy.json
 .yarn/
 *.chat
 .jupyter_ystore.db
+
+# For local testing
+playground/

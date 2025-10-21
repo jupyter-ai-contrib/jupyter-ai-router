@@ -18,15 +18,15 @@ router = self.serverapp.web_app.settings.get("jupyter-ai", {}).get("router")
 def on_new_chat(room_id: str, ychat: YChat):
     print(f"New chat connected: {room_id}")
 
-def on_slash_command(room_id: str, message: Message):
-    print(f"Slash command in {room_id}: {message.body}")
+def on_slash_command(room_id: str, command: str, message: Message):
+    print(f"Slash command '{command}' in {room_id}: {message.body}")
 
-def on_regular_message(room_id: str, message: Message):`
+def on_regular_message(room_id: str, message: Message):
     print(f"Regular message in {room_id}: {message.body}")
 
 # Register the callbacks
 router.observe_chat_init(on_new_chat)
-router.observe_slash_cmd_msg("room-id", on_slash_command)
+router.observe_slash_cmd_msg("room-id", "help", on_slash_command)  # Only /help commands
 router.observe_chat_msg("room-id", on_regular_message)
 ```
 
@@ -40,8 +40,29 @@ router.observe_chat_msg("room-id", on_regular_message)
 ### Available Methods
 
 - `observe_chat_init(callback)` - Called when new chat sessions are initialized with `(room_id, ychat)`
-- `observe_slash_cmd_msg(room_id, callback)` - Called for messages starting with `/` in a specific room
+- `observe_slash_cmd_msg(room_id, command_pattern, callback)` - Called for specific slash commands matching the pattern in a specific room
 - `observe_chat_msg(room_id, callback)` - Called for regular (non-slash) messages in a specific room
+
+### Command Pattern Matching
+
+The `observe_slash_cmd_msg` method supports regex pattern matching:
+
+```python
+# Exact match: Only matches "/help"
+router.observe_slash_cmd_msg("room-id", "help", callback)
+
+# Regex pattern: Matches "/ai-generate", "/ai-review", etc.
+router.observe_slash_cmd_msg("room-id", "ai-.*", callback)
+
+# Regex with groups: Matches "/export-json", "/export-csv", "/export-xml"
+router.observe_slash_cmd_msg("room-id", r"export-(json|csv|xml)", callback)
+```
+
+**Callback signature**: `callback(room_id: str, command: str, message: Message)`
+
+- `room_id`: The chat room identifier
+- `command`: The matched command without the leading slash (e.g., "help", "ai-generate")
+- `message`: Message object with the command removed from the body (only arguments remain)
 
 ## Install
 

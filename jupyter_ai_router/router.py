@@ -9,6 +9,8 @@ This module provides a MessageRouter that:
 
 from typing import Any, Callable, Dict, List, TYPE_CHECKING
 from functools import partial
+import re
+from dataclasses import replace
 from jupyterlab_chat.models import Message
 from pycrdt import ArrayEvent
 from traitlets.config import LoggingConfigurable
@@ -17,6 +19,23 @@ if TYPE_CHECKING:
     from jupyterlab_chat.ychat import YChat
 
 from .utils import get_first_word
+
+
+def matches_pattern(word: str, pattern: str) -> bool:
+    """
+    Check if a word matches a regex pattern.
+
+    Args:
+        word: The word to match (e.g., "help", "ai-generate")
+        pattern: The regex pattern to match against (e.g., "help", "ai-.*", "export-(json|csv)")
+
+    Returns:
+        True if the word matches the pattern
+    """
+    try:
+        return bool(re.match(f"^{pattern}$", word))
+    except re.error:
+        return False
 
 
 class MessageRouter(LoggingConfigurable):
@@ -34,7 +53,7 @@ class MessageRouter(LoggingConfigurable):
 
         # Callback lists
         self.chat_init_observers: List[Callable[[str, "YChat"], Any]] = []
-        self.slash_cmd_observers: Dict[str, List[Callable[[str, Message], Any]]] = {}
+        self.slash_cmd_observers: Dict[str, Dict[str, List[Callable[[str, str, Message], Any]]]] = {}
         self.chat_msg_observers: Dict[str, List[Callable[[str, Message], Any]]] = {}
 
         # Active chat rooms
@@ -54,19 +73,28 @@ class MessageRouter(LoggingConfigurable):
         self.log.info("Registered new chat initialization callback")
 
     def observe_slash_cmd_msg(
-        self, room_id: str, callback: Callable[[str, Message], Any]
+        self, room_id: str, command_pattern: str, callback: Callable[[str, str, Message], Any]
     ) -> None:
         """
-        Register a callback for when slash commands are received.
+        Register a callback for when specific slash commands are received.
 
         Args:
-            callback: Function called with (room_id: str, message: Message) for slash commands
+            room_id: The chat room ID
+            command_pattern: Regex pattern to match commands (without leading slash).
+                Examples:
+                - Exact match: "help" matches "/help"
+                - Pattern match: "ai-.*" matches "/ai-generate", "/ai-review", etc.
+                - Multiple options: "export-(json|csv)" matches "/export-json", "/export-csv"
+            callback: Function called with (room_id: str, command: str, message: Message) for matching commands
         """
         if room_id not in self.slash_cmd_observers:
-            self.slash_cmd_observers[room_id] = []
+            self.slash_cmd_observers[room_id] = {}
+        
+        if command_pattern not in self.slash_cmd_observers[room_id]:
+            self.slash_cmd_observers[room_id][command_pattern] = []
 
-        self.slash_cmd_observers[room_id].append(callback)
-        self.log.info("Registered slash command callback")
+        self.slash_cmd_observers[room_id][command_pattern].append(callback)
+        self.log.info(f"Registered slash command callback for pattern: {command_pattern}")
 
     def observe_chat_msg(
         self, room_id: str, callback: Callable[[str, Message], Any]
@@ -157,9 +185,34 @@ class MessageRouter(LoggingConfigurable):
 
         # Check if it's a slash command
         if first_word and first_word.startswith("/"):
-            self._notify_slash_cmd_observers(room_id, message)
+            # Extract command and create trimmed message
+            parts = message.body.split(None, 1)  # Split into max 2 parts
+            command = parts[0] if parts else ""
+            trimmed_body = parts[1] if len(parts) > 1 else ""
+
+            # Create a copy of the message with trimmed body (command removed)
+            trimmed_message = replace(message, body=trimmed_body)
+
+            # Remove forward slash from command for cleaner API
+            clean_command = command[1:] if command.startswith("/") else command
+
+            # Route to slash command observers
+            self._notify_slash_cmd_observers(room_id, trimmed_message, clean_command)
         else:
             self._notify_msg_observers(room_id, message)
+
+
+    def _notify_slash_cmd_observers(self, room_id: str, message: Message, clean_command: str) -> None:
+        """Notify observers registered for slash commands."""
+        room_observers = self.slash_cmd_observers.get(room_id, {})
+
+        for registered_pattern, callbacks in room_observers.items():
+            if matches_pattern(clean_command, registered_pattern):
+                for callback in callbacks:
+                    try:
+                        callback(room_id, clean_command, message)
+                    except Exception as e:
+                        self.log.error(f"Slash command observer error for pattern '{registered_pattern}': {e}")
 
     def _notify_chat_init_observers(self, room_id: str, ychat: "YChat") -> None:
         """Notify all new chat observers."""
@@ -168,15 +221,6 @@ class MessageRouter(LoggingConfigurable):
                 callback(room_id, ychat)
             except Exception as e:
                 self.log.error(f"New chat observer error for {room_id}: {e}")
-
-    def _notify_slash_cmd_observers(self, room_id: str, message: Message) -> None:
-        """Notify all slash command observers."""
-        callbacks = self.slash_cmd_observers.get(room_id, [])
-        for callback in callbacks:
-            try:
-                callback(room_id, message)
-            except Exception as e:
-                self.log.error(f"Slash command observer error for {room_id}: {e}")
 
     def _notify_msg_observers(self, room_id: str, message: Message) -> None:
         """Notify all message observers."""
