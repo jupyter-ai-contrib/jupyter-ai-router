@@ -73,6 +73,17 @@ class MessageRouter(LoggingConfigurable):
         self.chat_init_observers.append(callback)
         self.log.info("Registered new chat initialization callback")
     
+    def observe_chat_reset(self, callback: Callable[[str, "YChat"], Any]) -> None:
+        """
+        Register a callback for when a `YChat` document is reset. This will only
+        occur if `jupyter_server_documents` is installed.
+
+        Args:
+            callback: Function called with (room_id: str, new_ychat: YChat) when chat resets
+        """
+        self.chat_reset_observers.append(callback)
+        self.log.info("Registered new chat reset callback")
+    
     def observe_slash_cmd_msg(
         self, room_id: str, command_pattern: str, callback: Callable[[str, str, Message], Any]
     ) -> None:
@@ -241,7 +252,11 @@ class MessageRouter(LoggingConfigurable):
         installed.
         """
         self.log.warning(f"Detected `YChat` document reset in room '{room_id}'.")
-        pass
+        for callback in self.chat_reset_observers:
+            try:
+                callback(room_id, ychat)
+            except Exception as e:
+                self.log.error(f"Reset chat observer error for {room_id}: {e}")
 
     def cleanup(self) -> None:
         """Clean up router resources."""
