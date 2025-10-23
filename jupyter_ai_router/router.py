@@ -55,6 +55,7 @@ class MessageRouter(LoggingConfigurable):
         self.chat_init_observers: List[Callable[[str, "YChat"], Any]] = []
         self.slash_cmd_observers: Dict[str, Dict[str, List[Callable[[str, str, Message], Any]]]] = {}
         self.chat_msg_observers: Dict[str, List[Callable[[str, Message], Any]]] = {}
+        self.chat_reset_observers: List[Callable[[str, "YChat"], Any]] = []
 
         # Active chat rooms
         self.active_chats: Dict[str, "YChat"] = {}
@@ -71,7 +72,18 @@ class MessageRouter(LoggingConfigurable):
         """
         self.chat_init_observers.append(callback)
         self.log.info("Registered new chat initialization callback")
+    
+    def observe_chat_reset(self, callback: Callable[[str, "YChat"], Any]) -> None:
+        """
+        Register a callback for when a `YChat` document is reset. This will only
+        occur if `jupyter_server_documents` is installed.
 
+        Args:
+            callback: Function called with (room_id: str, new_ychat: YChat) when chat resets
+        """
+        self.chat_reset_observers.append(callback)
+        self.log.info("Registered new chat reset callback")
+    
     def observe_slash_cmd_msg(
         self, room_id: str, command_pattern: str, callback: Callable[[str, str, Message], Any]
     ) -> None:
@@ -230,6 +242,21 @@ class MessageRouter(LoggingConfigurable):
                 callback(room_id, message)
             except Exception as e:
                 self.log.error(f"Message observer error for {room_id}: {e}")
+    
+    def _on_chat_reset(self, room_id, ychat: "YChat") -> None:
+        """
+        Method to call when the YChat undergoes a document reset, e.g. when the
+        `.chat` file is modified directly on disk.
+        
+        NOTE: Document resets will only occur when `jupyter_server_documents` is
+        installed.
+        """
+        self.log.warning(f"Detected `YChat` document reset in room '{room_id}'.")
+        for callback in self.chat_reset_observers:
+            try:
+                callback(room_id, ychat)
+            except Exception as e:
+                self.log.error(f"Reset chat observer error for {room_id}: {e}")
 
     def cleanup(self) -> None:
         """Clean up router resources."""
