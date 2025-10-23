@@ -14,6 +14,7 @@ from dataclasses import replace
 from jupyterlab_chat.models import Message
 from pycrdt import ArrayEvent
 from traitlets.config import LoggingConfigurable
+from jupyter_ydoc.ybasedoc import YBaseDoc
 
 if TYPE_CHECKING:
     from jupyterlab_chat.ychat import YChat
@@ -56,6 +57,13 @@ class MessageRouter(LoggingConfigurable):
         self.slash_cmd_observers: Dict[str, Dict[str, List[Callable[[str, str, Message], Any]]]] = {}
         self.chat_msg_observers: Dict[str, List[Callable[[str, Message], Any]]] = {}
         self.chat_reset_observers: List[Callable[[str, "YChat"], Any]] = []
+        
+        # Notebook observers
+        self.notebook_activity_observers: Dict[str, List[Callable[[Any], Any]]] = {}
+        self.notebook_cell_states: Dict[str, Dict] = {}
+
+        # Active notebook rooms
+        self.active_notebooks = Dict[str, YBaseDoc] = {}
 
         # Active chat rooms
         self.active_chats: Dict[str, "YChat"] = {}
@@ -122,6 +130,33 @@ class MessageRouter(LoggingConfigurable):
 
         self.chat_msg_observers[room_id].append(callback)
         self.log.info("Registered message callback")
+
+    
+    def observe_notebook_activity(
+        self, room_id: str, callback: Callable[[Any], Any]
+    ) -> None:
+        """
+        Register a callback for when notebook becomes active
+        """
+
+        if room_id not in self.notebook_activity_observers:
+            self.notebook_activity_observers[room_id] = []
+
+        self.notebook_activity_observers[room_id].append(callback)
+        self.log.info("Registered notbook activity callback")
+
+    
+    def connect_notebook(self, room_id: str, ydoc: YBaseDoc) -> None:
+        """
+        Connects a new notebook session to the router
+        """
+        
+        if room_id in self.active_notebooks:
+            self.log.warning(f"Notebook {room_id} already connected to router")
+            return
+        
+        self.active_notebooks[room_id] = ydoc
+
 
     def connect_chat(self, room_id: str, ychat: "YChat") -> None:
         """
