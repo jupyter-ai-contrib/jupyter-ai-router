@@ -128,3 +128,5 @@ dmypy.json
 
 # For local testing
 playground/
+
+.vscode/
