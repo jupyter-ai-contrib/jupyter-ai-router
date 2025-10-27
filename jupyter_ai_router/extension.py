@@ -74,30 +74,9 @@ class RouterExtension(ExtensionApp):
             self.event_logger.add_listener(
                 schema_id=JUPYTER_COLLABORATION_EVENTS_URI, listener=self._on_chat_event
             )
-            self.event_loop.create_task(self._check_notebook_observer())
             
         elapsed = time.time() - start
         self.log.info(f"Initialized RouterExtension in {elapsed:.2f}s")
-
-    
-    async def _check_notebook_observer(self):
-        await asyncio.sleep(20)
-        def callback(username, prev_active_cell, notebook_path):
-            self.log.info(
-                f"notebook observer callback : {username=}, {prev_active_cell=}, {notebook_path=}"
-            )
-
-        jcollab_api = self.serverapp.web_app.settings["jupyter_server_ydoc"]
-        yroom_manager = jcollab_api.yroom_manager
-        yroom = yroom_manager.get_room("JupyterLab:globalAwareness")
-        awareness = yroom.get_awareness()
-        for _, state in awareness.states.items():
-            if username := state.get("user", {}).get("username", None):
-                self.router.observe_notebook_activity(
-                    username=username, callback=callback
-                )
-                break
-        
 
     def _get_global_awareness(self):
         # TODO: make this compatible with jcollab
