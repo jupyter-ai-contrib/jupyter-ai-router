@@ -443,7 +443,15 @@ class MessageRouter(LoggingConfigurable):
     def _on_notebook_change(self, room_id: str, events):
         """Handle notebook document changes and log event details."""
 
-        self.log.info(f"Change event is {events}")
+        for event in events:
+            if isinstance(event, MapEvent):
+                self.log.info(f"Keys: {event.keys}")
+            else:
+                self.log.info(f"Change type: {event.delta}")
+            self.log.info(f"Target: {event.target}")
+            self.log.info(f"Event Path:  {event.path}")
+            
+
 
         # Save the timestamp that a change was made indicating notebook has changed
         current_time = time.time()
@@ -491,6 +499,7 @@ class MessageRouter(LoggingConfigurable):
                 }
                 continue
 
+            # If active cell changed and there were new edits
             if prev_active_cell != active_cell and room.last_edit_time > prev_check:
                 # Check if enough time has passed since last trigger
                 if current_time - room.last_trigger_time >= self.trigger_cooldown:
