@@ -13,7 +13,7 @@ from functools import partial
 import re
 from dataclasses import replace
 from jupyterlab_chat.models import Message
-from pycrdt import ArrayEvent
+from pycrdt import ArrayEvent, TextEvent, MapEvent
 from traitlets.config import LoggingConfigurable
 from jupyter_ydoc.ybasedoc import YBaseDoc
 
@@ -112,6 +112,9 @@ class MessageRouter(LoggingConfigurable):
         # Root observers for keeping track of incoming messages
         self.message_observers: Dict[str, Callable] = {}
 
+        # Global awareness observer subscriber ID for cleanup
+        self._global_awareness_subscriber_id = None
+
         self.event_loop.create_task(self._start_observing_global_awareness())
 
     async def _room_id_from_path(self, path: str) -> str | None:
@@ -133,7 +136,7 @@ class MessageRouter(LoggingConfigurable):
     
     async def _start_observing_global_awareness(self):
         awareness = self._get_global_awareness()
-        awareness.observe(self._on_global_awareness_change)
+        self._global_awareness_subscriber_id = awareness.observe(self._on_global_awareness_change)
 
     async def _start_observing_room(self, room_id: str, username: str):
         """Start observing a room's document and awareness changes."""
@@ -401,7 +404,8 @@ class MessageRouter(LoggingConfigurable):
     async def _handle_user_document_switch(
         self, username: str, current_doc: str, prev_doc: str | None
     ):
-        """Handle user switching documents - async version for room operations."""
+        """Handles user switching documents, unobserves current doc room,
+        and registers new observers for the room that becomes active."""
         try:
             # Only handle users we have observers for
             if username not in self.users:
@@ -436,15 +440,16 @@ class MessageRouter(LoggingConfigurable):
         except Exception as e:
             self.log.error(f"Error handling document switch for user {username}: {e}")
 
-    def _on_notebook_change(self, room_id: str):
+    def _on_notebook_change(self, room_id: str, events):
         """Handle notebook document changes and log event details."""
+
+        self.log.info(f"Change event is {events}")
 
         # Save the timestamp that a change was made indicating notebook has changed
         current_time = time.time()
         if room_id in self.rooms:
             self.rooms[room_id].last_edit_time = current_time
-        self.log.info(f"Notebook cells changed in {room_id} at {current_time}")
-        
+        self.log.info(f"Notebook cells changed in {room_id} at {current_time}")        
 
     def _on_awareness_change(self, room_id: str, ydoc: YBaseDoc, topic, updates):
         """Handle awareness changes for notebook activity tracking."""
@@ -486,17 +491,15 @@ class MessageRouter(LoggingConfigurable):
                 }
                 continue
 
-            if prev_active_cell != active_cell:
-                # Check if there was a notebook change since last check
-                if room.last_edit_time > prev_check:
-                    # Check if enough time has passed since last trigger (debouncing)
-                    if current_time - room.last_trigger_time >= self.trigger_cooldown:
-                        room.last_trigger_time = current_time
-                        self._notify_notebook_activity_observers(
-                            username=username,
-                            prev_active_cell=prev_active_cell,
-                            notebook_path=notebook_path
-                        )
+            if prev_active_cell != active_cell and room.last_edit_time > prev_check:
+                # Check if enough time has passed since last trigger
+                if current_time - room.last_trigger_time >= self.trigger_cooldown:
+                    room.last_trigger_time = current_time
+                    self._notify_notebook_activity_observers(
+                        username=username,
+                        prev_active_cell=prev_active_cell,
+                        notebook_path=notebook_path
+                    )
 
                 # Update stored state for this user
                 user.room_states[room_id] = {
@@ -676,19 +679,66 @@ class MessageRouter(LoggingConfigurable):
             except Exception as e:
                 self.log.error(f"Reset notebook observer error for {room_id}: {e}")
 
+    def _cleanup_rooms(self) -> None:
+        """Clean up all room trackers and their subscriptions."""
+        room_ids = list(self.rooms.keys())
+        for room_id in room_ids:
+            room_tracker = self.rooms[room_id]
+            try:
+                room_tracker.stop_observing()
+                self.log.debug(f"Cleaned up room tracker for {room_id}")
+            except Exception as e:
+                self.log.warning(f"Failed to clean up room tracker {room_id}: {e}")
+        self.rooms.clear()
+
+    def _cleanup_awareness_observers(self) -> None:
+        """Clean up global and local awareness observers."""
+        # Clean up global awareness observer
+        if self._global_awareness_subscriber_id is not None:
+            try:
+                awareness = self._get_global_awareness()
+                awareness.unobserve(self._global_awareness_subscriber_id)
+                self._global_awareness_subscriber_id = None
+                self.log.debug("Cleaned up global awareness observer")
+            except Exception as e:
+                self.log.warning(f"Failed to clean up global awareness observer: {e}")
+
+        # Clean up notebook activity observers
+        observer_ids = list(self._observer_callbacks.keys())
+        for observer_id in observer_ids:
+            try:
+                # Observer callbacks are already disconnected via room cleanup
+                # Just need to clear the registry
+                del self._observer_callbacks[observer_id]
+            except Exception as e:
+                self.log.warning(f"Failed to clean up observer {observer_id}: {e}")
+
+        # Reset observer counter
+        self.observer_counter = 0
+
     def cleanup(self) -> None:
         """Clean up router resources."""
         self.log.info("Cleaning up MessageRouter...")
+
+        # Clean up room trackers and their subscriptions
+        self._cleanup_rooms()
+
+        # Clean up user trackers
+        self.users.clear()
+
+        # Clean up awareness observers (global and local)
+        self._cleanup_awareness_observers()
 
         # Disconnect all chats
         room_ids = list(self.active_chats.keys())
         for room_id in room_ids:
             self.disconnect_chat(room_id)
 
-        # Clear callbacks
+        # Clear all observer callback lists
         self.chat_init_observers.clear()
         self.slash_cmd_observers.clear()
         self.chat_msg_observers.clear()
         self.chat_reset_observers.clear()
+        self.notebook_reset_observers.clear()
 
         self.log.info("MessageRouter cleanup complete")
