@@ -332,28 +332,81 @@ class TestMessageRouter:
         room_id = "test-room"
         callback = Mock()
         self.router.observe_slash_cmd_msg(room_id, "help", callback)
-        
+
         original_msg = Message(
             id="test-id",
             body="/help getting-started",
-            sender="test-user", 
+            sender="test-user",
             time=123.456,
             mentions=["@someone"],
             attachments=["file1.txt"]
         )
-        
+
         self.router._route_message(room_id, original_msg)
-        
+
         call_args = callback.call_args_list[0][0]
         trimmed_msg = call_args[2]
-        
+
         # Check that metadata is preserved
         assert trimmed_msg.id == original_msg.id
         assert trimmed_msg.sender == original_msg.sender
         assert trimmed_msg.time == original_msg.time
         assert trimmed_msg.mentions == original_msg.mentions
         assert trimmed_msg.attachments == original_msg.attachments
-        
+
         # Only body should be different
         assert trimmed_msg.body == "getting-started"
         assert original_msg.body == "/help getting-started"  # Original unchanged
+
+    def test_deleted_messages_not_routed(self):
+        """Test that deleted messages are not routed to any callbacks."""
+        room_id = "test-room"
+        slash_callback = Mock()
+        msg_callback = Mock()
+
+        self.router.observe_slash_cmd_msg(room_id, "help", slash_callback)
+        self.router.observe_chat_msg(room_id, msg_callback)
+
+        # Test deleted slash command message
+        deleted_slash_msg = Message(
+            id="1",
+            body="/help topic",
+            sender="user",
+            time=123,
+            deleted=True
+        )
+        self.router._route_message(room_id, deleted_slash_msg)
+        slash_callback.assert_not_called()
+
+        # Test deleted regular message
+        deleted_regular_msg = Message(
+            id="2",
+            body="Hello world",
+            sender="user",
+            time=124,
+            deleted=True
+        )
+        self.router._route_message(room_id, deleted_regular_msg)
+        msg_callback.assert_not_called()
+
+        # Verify non-deleted messages still work
+        normal_slash_msg = Message(
+            id="3",
+            body="/help topic",
+            sender="user",
+            time=125,
+            deleted=False
+        )
+        self.router._route_message(room_id, normal_slash_msg)
+        slash_callback.assert_called_once()
+
+        normal_regular_msg = Message(
+            id="4",
+            body="Hello world",
+            sender="user",
+            time=126,
+            deleted=False
+        )
+        self.router._route_message(room_id, normal_regular_msg)
+        msg_callback.assert_called_once()
+

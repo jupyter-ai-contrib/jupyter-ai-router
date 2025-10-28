@@ -193,6 +193,10 @@ class MessageRouter(LoggingConfigurable):
             room_id: The chat room ID
             message: The message to route
         """
+
+        if message.deleted:
+            return
+        
         first_word = get_first_word(message.body)
 
         # Check if it's a slash command
