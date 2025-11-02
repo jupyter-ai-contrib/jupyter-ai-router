@@ -8,6 +8,7 @@ This module provides a MessageRouter that:
 """
 
 import time
+import asyncio
 from typing import Any, Callable, Dict, List, TYPE_CHECKING
 from functools import partial
 import re
@@ -116,6 +117,25 @@ class MessageRouter(LoggingConfigurable):
         self._global_awareness_subscriber_id = None
 
         self.event_loop.create_task(self._start_observing_global_awareness())
+
+    def _invoke_callback(self, callback: Callable, *args, **kwargs) -> None:
+        """
+        Invoke a callback, handling both sync and async callbacks.
+
+        Args:
+            callback: The callback function to invoke
+            *args: Positional arguments to pass to the callback
+            **kwargs: Keyword arguments to pass to the callback
+        """
+        try:
+            if asyncio.iscoroutinefunction(callback):
+                # For async callbacks, schedule them as a task
+                self.event_loop.create_task(callback(*args, **kwargs))
+            else:
+                # For sync callbacks, call directly
+                callback(*args, **kwargs)
+        except Exception as e:
+            self.log.error(f"Error invoking callback: {e}")
 
     async def _room_id_from_path(self, path: str) -> str | None:
         room_id = await self.parent._room_id_from_path(path)
@@ -531,10 +551,7 @@ class MessageRouter(LoggingConfigurable):
         for observer_id in observer_ids:
             if observer_id in self._observer_callbacks:
                 callback = self._observer_callbacks[observer_id]["callback"]
-                try:
-                    callback(username, prev_active_cell, notebook_path)
-                except Exception as e:
-                    self.log.error(f"Notebook activity observer error for {username}: {e}")
+                self._invoke_callback(callback, username, prev_active_cell, notebook_path)
 
 
     def connect_chat(self, room_id: str, ychat: "YChat") -> None:
@@ -635,58 +652,43 @@ class MessageRouter(LoggingConfigurable):
         for registered_pattern, callbacks in room_observers.items():
             if matches_pattern(clean_command, registered_pattern):
                 for callback in callbacks:
-                    try:
-                        callback(room_id, clean_command, message)
-                    except Exception as e:
-                        self.log.error(f"Slash command observer error for pattern '{registered_pattern}': {e}")
+                    self._invoke_callback(callback, room_id, clean_command, message)
 
     def _notify_chat_init_observers(self, room_id: str, ychat: "YChat") -> None:
         """Notify all new chat observers."""
         for callback in self.chat_init_observers:
-            try:
-                callback(room_id, ychat)
-            except Exception as e:
-                self.log.error(f"New chat observer error for {room_id}: {e}")
+            self._invoke_callback(callback, room_id, ychat)
 
     def _notify_msg_observers(self, room_id: str, message: Message) -> None:
         """Notify all message observers."""
         callbacks = self.chat_msg_observers.get(room_id, [])
         for callback in callbacks:
-            try:
-                callback(room_id, message)
-            except Exception as e:
-                self.log.error(f"Message observer error for {room_id}: {e}")
+            self._invoke_callback(callback, room_id, message)
     
     def _on_chat_reset(self, room_id, ychat: "YChat") -> None:
         """
         Method to call when the YChat undergoes a document reset, e.g. when the
         `.chat` file is modified directly on disk.
-        
+
         NOTE: Document resets will only occur when `jupyter_server_documents` is
         installed.
         """
         self.log.warning(f"Detected `YChat` document reset in room '{room_id}'.")
         self.active_chats[room_id] = ychat
         for callback in self.chat_reset_observers:
-            try:
-                callback(room_id, ychat)
-            except Exception as e:
-                self.log.error(f"Reset chat observer error for {room_id}: {e}")
+            self._invoke_callback(callback, room_id, ychat)
 
     def _on_notebook_reset(self, room_id, ydoc: YBaseDoc) -> None:
         """
         Method to call when the YDoc undergoes a document reset, e.g. when the
         `.ipynb` file is modified directly on disk.
-        
+
         NOTE: Document resets will only occur when `jupyter_server_documents` is
         installed.
         """
         self.log.warning(f"Detected `YDoc` document reset in room '{room_id}'.")
         for callback in self.notebook_reset_observers:
-            try:
-                callback(room_id, ydoc)
-            except Exception as e:
-                self.log.error(f"Reset notebook observer error for {room_id}: {e}")
+            self._invoke_callback(callback, room_id, ydoc)
 
     def _cleanup_rooms(self) -> None:
         """Clean up all room trackers and their subscriptions."""
