@@ -72,7 +72,7 @@ class MessageRouter(LoggingConfigurable):
         """
         self.chat_init_observers.append(callback)
         self.log.info("Registered new chat initialization callback")
-    
+
     def observe_chat_reset(self, callback: Callable[[str, "YChat"], Any]) -> None:
         """
         Register a callback for when a `YChat` document is reset. This will only
@@ -83,7 +83,7 @@ class MessageRouter(LoggingConfigurable):
         """
         self.chat_reset_observers.append(callback)
         self.log.info("Registered new chat reset callback")
-    
+
     def observe_slash_cmd_msg(
         self, room_id: str, command_pattern: str, callback: Callable[[str, str, Message], Any]
     ) -> None:
@@ -101,7 +101,7 @@ class MessageRouter(LoggingConfigurable):
         """
         if room_id not in self.slash_cmd_observers:
             self.slash_cmd_observers[room_id] = {}
-        
+
         if command_pattern not in self.slash_cmd_observers[room_id]:
             self.slash_cmd_observers[room_id][command_pattern] = []
 
@@ -177,11 +177,7 @@ class MessageRouter(LoggingConfigurable):
             if "insert" not in change.keys():
                 continue
 
-            # Process new messages (filter out raw_time duplicates)
-            new_messages = [
-                Message(**m) for m in change["insert"] if not m.get("raw_time", False)
-            ]
-
+            new_messages = [Message(**m.to_py()) for m in change["insert"]]
             for message in new_messages:
                 self._route_message(room_id, message)
 
@@ -196,7 +192,7 @@ class MessageRouter(LoggingConfigurable):
 
         if message.deleted:
             return
-        
+
         first_word = get_first_word(message.body)
 
         # Check if it's a slash command
@@ -246,12 +242,12 @@ class MessageRouter(LoggingConfigurable):
                 callback(room_id, message)
             except Exception as e:
                 self.log.error(f"Message observer error for {room_id}: {e}")
-    
+
     def _on_chat_reset(self, room_id, ychat: "YChat") -> None:
         """
         Method to call when the YChat undergoes a document reset, e.g. when the
         `.chat` file is modified directly on disk.
-        
+
         NOTE: Document resets will only occur when `jupyter_server_documents` is
         installed.
         """
