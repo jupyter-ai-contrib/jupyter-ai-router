@@ -136,6 +136,13 @@ class RouterExtension(ExtensionApp):
                 self.router._on_chat_reset(room_id, new_ychat)
 
             ychat = await yroom.get_jupyter_ydoc(on_reset=_on_ychat_reset)
+
+            def _on_yroom_stop():
+                self.router.disconnect_chat(room_id)
+                self.router._notify_chat_stop_observers(room_id)
+
+            yroom.add_stop_callback(_on_yroom_stop)
+
             return ychat
         except Exception as e:
             self.log.error(f"Error getting chat document for {room_id}: {e}")
