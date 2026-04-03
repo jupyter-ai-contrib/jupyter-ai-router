@@ -18,6 +18,9 @@ router = self.serverapp.web_app.settings.get("jupyter-ai", {}).get("router")
 def on_new_chat(room_id: str, ychat: YChat):
     print(f"New chat connected: {room_id}")
 
+def on_chat_reset(room_id: str, new_ychat: YChat):
+    print(f"Chat document reset: {room_id}")
+
 def on_slash_command(room_id: str, command: str, message: Message):
     print(f"Slash command '{command}' in {room_id}: {message.body}")
 
@@ -26,6 +29,7 @@ def on_regular_message(room_id: str, message: Message):
 
 # Register the callbacks
 router.observe_chat_init(on_new_chat)
+router.observe_chat_reset(on_chat_reset)  # Called when .chat file is modified directly
 router.observe_slash_cmd_msg("room-id", "help", on_slash_command)  # Only /help commands
 router.observe_chat_msg("room-id", on_regular_message)
 ```
@@ -40,6 +44,7 @@ router.observe_chat_msg("room-id", on_regular_message)
 ### Available Methods
 
 - `observe_chat_init(callback)` - Called when new chat sessions are initialized with `(room_id, ychat)`
+- `observe_chat_reset(callback)` - Called when a YChat document is reset (requires `jupyter_server_documents`) with `(room_id, new_ychat)`
 - `observe_slash_cmd_msg(room_id, command_pattern, callback)` - Called for specific slash commands matching the pattern in a specific room
 - `observe_chat_msg(room_id, callback)` - Called for regular (non-slash) messages in a specific room
 
