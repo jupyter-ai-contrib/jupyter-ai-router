@@ -180,6 +180,8 @@ class MessageRouter(LoggingConfigurable):
             del self.message_observers[room_id]
 
         del self.active_chats[room_id]
+        self.slash_cmd_observers.pop(room_id, None)
+        self.chat_msg_observers.pop(room_id, None)
         self.log.info(f"Disconnected chat {room_id} from router")
 
     def _on_message_change(
