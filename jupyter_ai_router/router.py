@@ -53,6 +53,7 @@ class MessageRouter(LoggingConfigurable):
 
         # Callback lists
         self.chat_init_observers: List[Callable[[str, "YChat"], Any]] = []
+        self.chat_stop_observers: List[Callable[[str], Any]] = []
         self.slash_cmd_observers: Dict[str, Dict[str, List[Callable[[str, str, Message], Any]]]] = {}
         self.chat_msg_observers: Dict[str, List[Callable[[str, Message], Any]]] = {}
         self.chat_reset_observers: List[Callable[[str, "YChat"], Any]] = []
@@ -72,6 +73,18 @@ class MessageRouter(LoggingConfigurable):
         """
         self.chat_init_observers.append(callback)
         self.log.info("Registered new chat initialization callback")
+
+    def observe_chat_stop(self, callback: Callable[[str], Any]) -> None:
+        """
+        Register a callback for when a chat room's YRoom is permanently stopped
+        (freed from memory). Only fires when `jupyter_server_documents` is
+        installed.
+
+        Args:
+            callback: Function called with (room_id: str) when the room is stopped.
+        """
+        self.chat_stop_observers.append(callback)
+        self.log.info("Registered chat stop callback")
 
     def observe_chat_reset(self, callback: Callable[[str, "YChat"], Any]) -> None:
         """
@@ -167,6 +180,8 @@ class MessageRouter(LoggingConfigurable):
             del self.message_observers[room_id]
 
         del self.active_chats[room_id]
+        self.slash_cmd_observers.pop(room_id, None)
+        self.chat_msg_observers.pop(room_id, None)
         self.log.info(f"Disconnected chat {room_id} from router")
 
     def _on_message_change(
@@ -234,6 +249,14 @@ class MessageRouter(LoggingConfigurable):
             except Exception as e:
                 self.log.error(f"New chat observer error for {room_id}: {e}")
 
+    def _notify_chat_stop_observers(self, room_id: str) -> None:
+        """Notify all chat stop observers."""
+        for callback in self.chat_stop_observers:
+            try:
+                callback(room_id)
+            except Exception as e:
+                self.log.error(f"Chat stop observer error for {room_id}: {e}")
+
     def _notify_msg_observers(self, room_id: str, message: Message) -> None:
         """Notify all message observers."""
         callbacks = self.chat_msg_observers.get(room_id, [])
@@ -269,6 +292,7 @@ class MessageRouter(LoggingConfigurable):
 
         # Clear callbacks
         self.chat_init_observers.clear()
+        self.chat_stop_observers.clear()
         self.slash_cmd_observers.clear()
         self.chat_msg_observers.clear()
 
