@@ -12,7 +12,7 @@ from functools import partial
 import re
 from dataclasses import replace
 from jupyterlab_chat.models import Message
-from pycrdt import ArrayEvent
+from pycrdt import ArrayEvent, MapEvent, Subscription
 from traitlets.config import LoggingConfigurable
 
 if TYPE_CHECKING:
@@ -42,10 +42,12 @@ class MessageRouter(LoggingConfigurable):
     """
     Router that manages ychat message routing.
 
-    The Router provides three callback points:
+    The Router provides five callback points:
     1. When new chats are initialized
     2. When slash commands are received
     3. When regular (non-slash) messages are received
+    4. When existing messages are edited
+    5. When messages are deleted
     """
 
     def __init__(self, *args, **kwargs):
@@ -56,13 +58,16 @@ class MessageRouter(LoggingConfigurable):
         self.chat_stop_observers: List[Callable[[str], Any]] = []
         self.slash_cmd_observers: Dict[str, Dict[str, List[Callable[[str, str, Message], Any]]]] = {}
         self.chat_msg_observers: Dict[str, List[Callable[[str, Message], Any]]] = {}
+        self.chat_msg_edit_observers: Dict[str, List[Callable[[str, Message], Any]]] = {}
+        self.chat_msg_delete_observers: Dict[str, List[Callable[[str, Message], Any]]] = {}
         self.chat_reset_observers: List[Callable[[str, "YChat"], Any]] = []
 
         # Active chat rooms
         self.active_chats: Dict[str, "YChat"] = {}
 
-        # Root observers for keeping track of incoming messages
-        self.message_observers: Dict[str, Callable] = {}
+        # Root observers for keeping track of incoming messages.
+        # Stores Subscription objects returned by observe_deep().
+        self.message_observers: Dict[str, Subscription] = {}
 
     def observe_chat_init(self, callback: Callable[[str, "YChat"], Any]) -> None:
         """
@@ -136,6 +141,38 @@ class MessageRouter(LoggingConfigurable):
         self.chat_msg_observers[room_id].append(callback)
         self.log.info("Registered message callback")
 
+    def observe_msg_edit(
+        self, room_id: str, callback: Callable[[str, Message], Any]
+    ) -> None:
+        """
+        Register a callback for when an existing message is edited.
+
+        Args:
+            room_id: The chat room ID
+            callback: Function called with (room_id: str, message: Message) for edited messages
+        """
+        if room_id not in self.chat_msg_edit_observers:
+            self.chat_msg_edit_observers[room_id] = []
+
+        self.chat_msg_edit_observers[room_id].append(callback)
+        self.log.info("Registered message edit callback")
+
+    def observe_msg_delete(
+        self, room_id: str, callback: Callable[[str, Message], Any]
+    ) -> None:
+        """
+        Register a callback for when a message is deleted (soft-delete).
+
+        Args:
+            room_id: The chat room ID
+            callback: Function called with (room_id: str, message: Message) for deleted messages
+        """
+        if room_id not in self.chat_msg_delete_observers:
+            self.chat_msg_delete_observers[room_id] = []
+
+        self.chat_msg_delete_observers[room_id].append(callback)
+        self.log.info("Registered message delete callback")
+
     def connect_chat(self, room_id: str, ychat: "YChat") -> None:
         """
         Connect a new chat session to the router.
@@ -150,10 +187,12 @@ class MessageRouter(LoggingConfigurable):
 
         self.active_chats[room_id] = ychat
 
-        # Set up message observer
-        callback = partial(self._on_message_change, room_id, ychat)
-        ychat.ymessages.observe(callback)
-        self.message_observers[room_id] = callback
+        # Set up deep message observer to catch inserts, edits, and deletes.
+        # observe_deep fires for both structural array changes (inserts/removals)
+        # and nested YMap mutations (field edits on existing messages).
+        callback = partial(self._on_message_change_deep, room_id, ychat)
+        subscription = ychat.ymessages.observe_deep(callback)
+        self.message_observers[room_id] = subscription
 
         self.log.info(f"Connected chat {room_id} to router")
 
@@ -184,17 +223,53 @@ class MessageRouter(LoggingConfigurable):
         self.chat_msg_observers.pop(room_id, None)
         self.log.info(f"Disconnected chat {room_id} from router")
 
-    def _on_message_change(
-        self, room_id: str, ychat: "YChat", events: ArrayEvent
+    def _on_message_change_deep(
+        self, room_id: str, ychat: "YChat", events: list
     ) -> None:
-        """Handle incoming messages from YChat."""
-        for change in events.delta:  # type: ignore[attr-defined]
-            if "insert" not in change.keys():
-                continue
+        """Handle all message changes from YChat (new, edit, delete).
 
-            new_messages = [Message(**m.to_py()) for m in change["insert"]]
-            for message in new_messages:
-                self._route_message(room_id, message)
+        This is registered via ``observe_deep`` on ``ychat.ymessages``, so it
+        receives a list of events covering both structural array changes
+        (``ArrayEvent`` for inserts/removals) and nested YMap mutations
+        (``MapEvent`` for field edits on existing messages).
+        """
+        for event in events:
+            if isinstance(event, ArrayEvent):
+                # Structural change — new messages inserted into the array
+                for change in event.delta:  # type: ignore[attr-defined]
+                    if "insert" not in change.keys():
+                        continue
+                    new_messages = [Message(**m.to_py()) for m in change["insert"]]
+                    for message in new_messages:
+                        self._route_message(room_id, message)
+
+            elif isinstance(event, MapEvent):
+                # Nested change — a message's fields were edited in place
+                self._handle_message_field_change(room_id, ychat, event)
+
+    def _handle_message_field_change(
+        self, room_id: str, ychat: "YChat", event: MapEvent
+    ) -> None:
+        """Handle in-place edits to an existing message's fields.
+
+        ``event.path`` is ``[index]`` where *index* is the position of the
+        mutated message in ``ychat.ymessages``.  ``event.keys`` is a dict
+        mapping changed field names to ``{action, oldValue, newValue}``.
+        """
+        try:
+            index = event.path[0]
+            raw = ychat.ymessages[index].to_py()
+            message = Message(**raw)
+        except (IndexError, KeyError, TypeError, Exception) as e:
+            self.log.warning(f"Could not resolve edited message in {room_id}: {e}")
+            return
+
+        changed_keys = set(event.keys.keys())
+
+        if "deleted" in changed_keys and message.deleted:
+            self._notify_msg_delete_observers(room_id, message)
+        elif "body" in changed_keys and not message.deleted:
+            self._notify_msg_edit_observers(room_id, message)
 
     def _route_message(self, room_id: str, message: Message) -> None:
         """
@@ -266,6 +341,24 @@ class MessageRouter(LoggingConfigurable):
             except Exception as e:
                 self.log.error(f"Message observer error for {room_id}: {e}")
 
+    def _notify_msg_edit_observers(self, room_id: str, message: Message) -> None:
+        """Notify all message edit observers."""
+        callbacks = self.chat_msg_edit_observers.get(room_id, [])
+        for callback in callbacks:
+            try:
+                callback(room_id, message)
+            except Exception as e:
+                self.log.error(f"Message edit observer error for {room_id}: {e}")
+
+    def _notify_msg_delete_observers(self, room_id: str, message: Message) -> None:
+        """Notify all message delete observers."""
+        callbacks = self.chat_msg_delete_observers.get(room_id, [])
+        for callback in callbacks:
+            try:
+                callback(room_id, message)
+            except Exception as e:
+                self.log.error(f"Message delete observer error for {room_id}: {e}")
+
     def _on_chat_reset(self, room_id, ychat: "YChat") -> None:
         """
         Method to call when the YChat undergoes a document reset, e.g. when the
@@ -295,5 +388,7 @@ class MessageRouter(LoggingConfigurable):
         self.chat_stop_observers.clear()
         self.slash_cmd_observers.clear()
         self.chat_msg_observers.clear()
+        self.chat_msg_edit_observers.clear()
+        self.chat_msg_delete_observers.clear()
 
         self.log.info("MessageRouter cleanup complete")

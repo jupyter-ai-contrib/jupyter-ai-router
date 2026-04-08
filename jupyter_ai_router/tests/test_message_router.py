@@ -6,6 +6,7 @@ import pytest
 from unittest.mock import Mock, MagicMock
 from jupyterlab_chat.models import Message
 from jupyterlab_chat.ychat import YChat
+from pycrdt import ArrayEvent, MapEvent
 from jupyter_ai_router.router import MessageRouter, matches_pattern
 from jupyter_ai_router.utils import get_first_word, is_persona
 
@@ -51,6 +52,8 @@ class TestMessageRouter:
         assert len(router.chat_init_observers) == 0
         assert len(router.slash_cmd_observers) == 0
         assert len(router.chat_msg_observers) == 0
+        assert len(router.chat_msg_edit_observers) == 0
+        assert len(router.chat_msg_delete_observers) == 0
         assert len(router.active_chats) == 0
 
     def test_observe_chat_init(self):
@@ -130,6 +133,8 @@ class TestMessageRouter:
         assert len(self.router.chat_init_observers) == 0
         assert len(self.router.slash_cmd_observers) == 0
         assert len(self.router.chat_msg_observers) == 0
+        assert len(self.router.chat_msg_edit_observers) == 0
+        assert len(self.router.chat_msg_delete_observers) == 0
 
 
     def test_matches_pattern_exact(self):
@@ -409,4 +414,239 @@ class TestMessageRouter:
         )
         self.router._route_message(room_id, normal_regular_msg)
         msg_callback.assert_called_once()
+
+
+class TestMessageEditDeleteObservers:
+    """Test edit and delete observer functionality."""
+
+    def setup_method(self):
+        self.router = MessageRouter()
+        self.mock_ychat = Mock(spec=YChat)
+        self.mock_ychat.ymessages = Mock()
+
+    def test_observe_msg_edit(self):
+        """Test registering a message edit callback."""
+        room_id = "test-room"
+        callback = Mock()
+        self.router.observe_msg_edit(room_id, callback)
+        assert callback in self.router.chat_msg_edit_observers[room_id]
+
+    def test_observe_msg_delete(self):
+        """Test registering a message delete callback."""
+        room_id = "test-room"
+        callback = Mock()
+        self.router.observe_msg_delete(room_id, callback)
+        assert callback in self.router.chat_msg_delete_observers[room_id]
+
+    def test_notify_msg_edit_observers(self):
+        """Test that edit observers are notified correctly."""
+        room_id = "test-room"
+        callback = Mock()
+        self.router.observe_msg_edit(room_id, callback)
+
+        msg = Message(id="1", body="edited text", sender="user", time=123)
+        self.router._notify_msg_edit_observers(room_id, msg)
+        callback.assert_called_once_with(room_id, msg)
+
+    def test_notify_msg_delete_observers(self):
+        """Test that delete observers are notified correctly."""
+        room_id = "test-room"
+        callback = Mock()
+        self.router.observe_msg_delete(room_id, callback)
+
+        msg = Message(id="1", body="deleted text", sender="user", time=123, deleted=True)
+        self.router._notify_msg_delete_observers(room_id, msg)
+        callback.assert_called_once_with(room_id, msg)
+
+    def test_edit_observer_error_handling(self):
+        """Test that errors in edit observers don't propagate."""
+        room_id = "test-room"
+        error_callback = Mock(side_effect=Exception("Test error"))
+        self.router.observe_msg_edit(room_id, error_callback)
+
+        msg = Message(id="1", body="edited", sender="user", time=123)
+        # Should not raise
+        self.router._notify_msg_edit_observers(room_id, msg)
+        error_callback.assert_called_once()
+
+    def test_delete_observer_error_handling(self):
+        """Test that errors in delete observers don't propagate."""
+        room_id = "test-room"
+        error_callback = Mock(side_effect=Exception("Test error"))
+        self.router.observe_msg_delete(room_id, error_callback)
+
+        msg = Message(id="1", body="deleted", sender="user", time=123, deleted=True)
+        # Should not raise
+        self.router._notify_msg_delete_observers(room_id, msg)
+        error_callback.assert_called_once()
+
+    def test_handle_message_field_change_body_edit(self):
+        """Test that body edits trigger edit observers."""
+        room_id = "test-room"
+        edit_callback = Mock()
+        delete_callback = Mock()
+        self.router.observe_msg_edit(room_id, edit_callback)
+        self.router.observe_msg_delete(room_id, delete_callback)
+
+        # Create a mock ychat with a message at index 0
+        mock_msg_map = Mock()
+        mock_msg_map.to_py.return_value = {
+            "id": "msg-1", "body": "edited text", "sender": "user",
+            "time": 123, "deleted": False,
+        }
+        self.mock_ychat.ymessages.__getitem__ = Mock(return_value=mock_msg_map)
+
+        # Simulate a MapEvent for body edit
+        event = Mock(spec=MapEvent)
+        event.path = [0]
+        event.keys = {"body": {"action": "update", "oldValue": "original", "newValue": "edited text"}}
+
+        self.router._handle_message_field_change(room_id, self.mock_ychat, event)
+
+        # Edit observer should fire, delete should not
+        edit_callback.assert_called_once()
+        delete_callback.assert_not_called()
+        called_msg = edit_callback.call_args[0][1]
+        assert called_msg.body == "edited text"
+
+    def test_handle_message_field_change_soft_delete(self):
+        """Test that setting deleted=True triggers delete observers."""
+        room_id = "test-room"
+        edit_callback = Mock()
+        delete_callback = Mock()
+        self.router.observe_msg_edit(room_id, edit_callback)
+        self.router.observe_msg_delete(room_id, delete_callback)
+
+        mock_msg_map = Mock()
+        mock_msg_map.to_py.return_value = {
+            "id": "msg-1", "body": "some text", "sender": "user",
+            "time": 123, "deleted": True,
+        }
+        self.mock_ychat.ymessages.__getitem__ = Mock(return_value=mock_msg_map)
+
+        event = Mock(spec=MapEvent)
+        event.path = [0]
+        event.keys = {"deleted": {"action": "update", "oldValue": False, "newValue": True}}
+
+        self.router._handle_message_field_change(room_id, self.mock_ychat, event)
+
+        # Delete observer should fire, edit should not
+        delete_callback.assert_called_once()
+        edit_callback.assert_not_called()
+        called_msg = delete_callback.call_args[0][1]
+        assert called_msg.deleted is True
+
+    def test_handle_message_field_change_unrelated_field(self):
+        """Test that changes to unrelated fields (like time) don't trigger observers."""
+        room_id = "test-room"
+        edit_callback = Mock()
+        delete_callback = Mock()
+        self.router.observe_msg_edit(room_id, edit_callback)
+        self.router.observe_msg_delete(room_id, delete_callback)
+
+        mock_msg_map = Mock()
+        mock_msg_map.to_py.return_value = {
+            "id": "msg-1", "body": "text", "sender": "user",
+            "time": 999, "deleted": False,
+        }
+        self.mock_ychat.ymessages.__getitem__ = Mock(return_value=mock_msg_map)
+
+        # Only time changed — neither edit nor delete
+        event = Mock(spec=MapEvent)
+        event.path = [0]
+        event.keys = {"time": {"action": "update", "oldValue": 123, "newValue": 999}}
+
+        self.router._handle_message_field_change(room_id, self.mock_ychat, event)
+
+        edit_callback.assert_not_called()
+        delete_callback.assert_not_called()
+
+    def test_handle_message_field_change_index_error(self):
+        """Test graceful handling when message index is out of bounds."""
+        room_id = "test-room"
+        edit_callback = Mock()
+        self.router.observe_msg_edit(room_id, edit_callback)
+
+        self.mock_ychat.ymessages.__getitem__ = Mock(side_effect=IndexError("out of range"))
+
+        event = Mock(spec=MapEvent)
+        event.path = [999]
+        event.keys = {"body": {"action": "update"}}
+
+        # Should not raise
+        self.router._handle_message_field_change(room_id, self.mock_ychat, event)
+        edit_callback.assert_not_called()
+
+    def test_on_message_change_deep_array_event(self):
+        """Test that ArrayEvent inserts are still routed correctly via deep observer."""
+        room_id = "test-room"
+        msg_callback = Mock()
+        self.router.observe_chat_msg(room_id, msg_callback)
+
+        # Simulate an ArrayEvent with insert
+        mock_msg = Mock()
+        mock_msg.to_py.return_value = {
+            "id": "new-1", "body": "hello", "sender": "user",
+            "time": 123, "deleted": False,
+        }
+        event = Mock(spec=ArrayEvent)
+        event.delta = [{"insert": [mock_msg]}]
+
+        self.router._on_message_change_deep(room_id, self.mock_ychat, [event])
+
+        msg_callback.assert_called_once()
+        called_msg = msg_callback.call_args[0][1]
+        assert called_msg.body == "hello"
+
+    def test_on_message_change_deep_map_event(self):
+        """Test that MapEvent field changes are dispatched via deep observer."""
+        room_id = "test-room"
+        edit_callback = Mock()
+        self.router.observe_msg_edit(room_id, edit_callback)
+
+        mock_msg_map = Mock()
+        mock_msg_map.to_py.return_value = {
+            "id": "msg-1", "body": "new body", "sender": "user",
+            "time": 123, "deleted": False,
+        }
+        self.mock_ychat.ymessages.__getitem__ = Mock(return_value=mock_msg_map)
+
+        event = Mock(spec=MapEvent)
+        event.path = [0]
+        event.keys = {"body": {"action": "update", "oldValue": "old", "newValue": "new body"}}
+
+        self.router._on_message_change_deep(room_id, self.mock_ychat, [event])
+
+        edit_callback.assert_called_once()
+
+    def test_connect_chat_uses_observe_deep(self):
+        """Test that connect_chat registers with observe_deep, not observe."""
+        room_id = "test-room"
+        self.router.connect_chat(room_id, self.mock_ychat)
+
+        # Should call observe_deep, not observe
+        self.mock_ychat.ymessages.observe_deep.assert_called_once()
+        self.mock_ychat.ymessages.observe.assert_not_called()
+
+    def test_body_edit_on_deleted_message_ignored(self):
+        """Test that body edits on already-deleted messages don't fire edit observers."""
+        room_id = "test-room"
+        edit_callback = Mock()
+        self.router.observe_msg_edit(room_id, edit_callback)
+
+        mock_msg_map = Mock()
+        mock_msg_map.to_py.return_value = {
+            "id": "msg-1", "body": "edited", "sender": "user",
+            "time": 123, "deleted": True,  # Already deleted
+        }
+        self.mock_ychat.ymessages.__getitem__ = Mock(return_value=mock_msg_map)
+
+        event = Mock(spec=MapEvent)
+        event.path = [0]
+        event.keys = {"body": {"action": "update", "oldValue": "old", "newValue": "edited"}}
+
+        self.router._handle_message_field_change(room_id, self.mock_ychat, event)
+
+        # Should NOT fire — message is deleted
+        edit_callback.assert_not_called()
 
