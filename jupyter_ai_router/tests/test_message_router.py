@@ -3,7 +3,8 @@ Tests for MessageRouter functionality.
 """
 
 import pytest
-from unittest.mock import Mock, MagicMock
+from time import time
+from unittest.mock import Mock, MagicMock, patch
 from jupyterlab_chat.models import Message
 from jupyterlab_chat.ychat import YChat
 from jupyter_ai_router.router import MessageRouter, matches_pattern
@@ -410,3 +411,102 @@ class TestMessageRouter:
         self.router._route_message(room_id, normal_regular_msg)
         msg_callback.assert_called_once()
 
+
+
+class TestPreExistingMessageFiltering:
+    """Test that messages loaded from disk on reconnect are not routed."""
+
+    def setup_method(self):
+        self.router = MessageRouter()
+        self.mock_ychat = Mock(spec=YChat)
+        self.mock_ychat.ymessages = Mock()
+        self.msg_callback = Mock()
+        self.slash_callback = Mock()
+
+    def _make_event(self, messages):
+        """Create a mock ArrayEvent with insert delta from Message dicts."""
+        items = []
+        for m in messages:
+            item = Mock()
+            item.to_py.return_value = m
+            items.append(item)
+        event = Mock()
+        event.delta = [{"insert": items}]
+        return event
+
+    def test_old_messages_skipped_on_reconnect(self):
+        """Messages with timestamps before connect_chat should not be routed."""
+        room_id = "test-room"
+        old_time = time() - 60  # 1 minute ago
+
+        self.router.connect_chat(room_id, self.mock_ychat)
+        self.router.observe_chat_msg(room_id, self.msg_callback)
+
+        # Simulate Yjs sync delivering old messages from disk
+        event = self._make_event([
+            {"id": "1", "body": "old msg 1", "sender": "user", "time": old_time},
+            {"id": "2", "body": "old msg 2", "sender": "user", "time": old_time - 10},
+        ])
+        self.router._on_message_change(room_id, self.mock_ychat, event)
+
+        self.msg_callback.assert_not_called()
+
+    def test_new_messages_routed_after_reconnect(self):
+        """Messages with timestamps after connect_chat should be routed."""
+        room_id = "test-room"
+
+        self.router.connect_chat(room_id, self.mock_ychat)
+        self.router.observe_chat_msg(room_id, self.msg_callback)
+
+        new_time = time() + 1
+        event = self._make_event([
+            {"id": "1", "body": "new msg", "sender": "user", "time": new_time},
+        ])
+        self.router._on_message_change(room_id, self.mock_ychat, event)
+
+        self.msg_callback.assert_called_once()
+        routed_msg = self.msg_callback.call_args[0][1]
+        assert routed_msg.body == "new msg"
+
+    def test_mixed_old_and_new_messages(self):
+        """Only new messages should be routed when old and new arrive together."""
+        room_id = "test-room"
+        old_time = time() - 60
+
+        self.router.connect_chat(room_id, self.mock_ychat)
+        self.router.observe_chat_msg(room_id, self.msg_callback)
+
+        new_time = time() + 1
+        event = self._make_event([
+            {"id": "1", "body": "old", "sender": "user", "time": old_time},
+            {"id": "2", "body": "new", "sender": "user", "time": new_time},
+        ])
+        self.router._on_message_change(room_id, self.mock_ychat, event)
+
+        assert self.msg_callback.call_count == 1
+        routed_msg = self.msg_callback.call_args[0][1]
+        assert routed_msg.body == "new"
+
+    def test_old_slash_commands_skipped(self):
+        """Old slash command messages should also be skipped."""
+        room_id = "test-room"
+        old_time = time() - 60
+
+        self.router.connect_chat(room_id, self.mock_ychat)
+        self.router.observe_slash_cmd_msg(room_id, "help", self.slash_callback)
+
+        event = self._make_event([
+            {"id": "1", "body": "/help topic", "sender": "user", "time": old_time},
+        ])
+        self.router._on_message_change(room_id, self.mock_ychat, event)
+
+        self.slash_callback.assert_not_called()
+
+    def test_connected_at_cleaned_on_disconnect(self):
+        """Disconnect should clean up the connected_at timestamp."""
+        room_id = "test-room"
+        self.router.connect_chat(room_id, self.mock_ychat)
+        assert room_id in self.router._connected_at
+
+        self.router.disconnect_chat(room_id)
+        assert room_id not in self.router._connected_at

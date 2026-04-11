@@ -7,6 +7,7 @@ This module provides a MessageRouter that:
 - Manages lifecycle and cleanup
 """
 
+from time import time
 from typing import Any, Callable, Dict, List, TYPE_CHECKING
 from functools import partial
 import re
@@ -63,6 +64,11 @@ class MessageRouter(LoggingConfigurable):
 
         # Root observers for keeping track of incoming messages
         self.message_observers: Dict[str, Callable] = {}
+
+        # Timestamp recorded when each room is connected. Messages with
+        # timestamps older than this are pre-existing (loaded from disk) and
+        # should not be routed.
+        self._connected_at: Dict[str, float] = {}
 
     def observe_chat_init(self, callback: Callable[[str, "YChat"], Any]) -> None:
         """
@@ -150,6 +156,10 @@ class MessageRouter(LoggingConfigurable):
 
         self.active_chats[room_id] = ychat
 
+        # Record the current time so we can distinguish pre-existing messages
+        # (loaded from disk after this point) from genuinely new messages.
+        self._connected_at[room_id] = time()
+
         # Set up message observer
         callback = partial(self._on_message_change, room_id, ychat)
         ychat.ymessages.observe(callback)
@@ -182,19 +192,24 @@ class MessageRouter(LoggingConfigurable):
         del self.active_chats[room_id]
         self.slash_cmd_observers.pop(room_id, None)
         self.chat_msg_observers.pop(room_id, None)
+        self._connected_at.pop(room_id, None)
         self.log.info(f"Disconnected chat {room_id} from router")
 
     def _on_message_change(
         self, room_id: str, ychat: "YChat", events: ArrayEvent
     ) -> None:
         """Handle incoming messages from YChat."""
+        connected_at = self._connected_at.get(room_id, 0)
         for change in events.delta:  # type: ignore[attr-defined]
             if "insert" not in change.keys():
                 continue
 
-            new_messages = [Message(**m.to_py()) for m in change["insert"]]
-            for message in new_messages:
-                self._route_message(room_id, message)
+            for item in change["insert"]:
+                raw = item.to_py()
+                # Skip messages that predate this connection (loaded from disk).
+                if raw["time"] < connected_at:
+                    continue
+                self._route_message(room_id, Message(**raw))
 
     def _route_message(self, room_id: str, message: Message) -> None:
         """
