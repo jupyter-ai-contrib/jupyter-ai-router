@@ -1,6 +1,8 @@
 # jupyter_ai_router
 
 [![Github Actions Status](https://github.com/jupyter-ai-contrib/jupyter-ai-router/workflows/Build/badge.svg)](https://github.com/jupyter-ai-contrib/jupyter-ai-router/actions/workflows/build.yml)
+[![PyPI version](https://img.shields.io/pypi/v/jupyter-ai-router.svg)](https://pypi.org/project/jupyter-ai-router/)
+[![conda-forge version](https://img.shields.io/conda/vn/conda-forge/jupyter-ai-router.svg)](https://anaconda.org/conda-forge/jupyter-ai-router)
 
 Core message routing layer for Jupyter AI
 
