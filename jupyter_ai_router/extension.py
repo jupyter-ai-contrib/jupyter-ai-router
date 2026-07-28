@@ -8,22 +8,23 @@ from jupyter_ai_router.handlers import RouteHandler
 
 from .router import MessageRouter
 
-try:
-    from jupyter_server_ydoc.utils import JUPYTER_COLLABORATION_EVENTS_URI
-except ImportError:
-    # Fallback if jupyter-collaboration is not available
-    JUPYTER_COLLABORATION_EVENTS_URI = (
-        "https://schema.jupyter.org/jupyter_collaboration/session/v1"
-    )
-
-# Define `JSD_PRESENT` to indicate whether `jupyter_server_documents` is
+# Get the collaboration event URI, from JSD if present, otherwise from
+# jupyter-server-ydoc if present. Fallback to a constant.
+# Also define `JSD_PRESENT` to indicate whether `jupyter_server_documents` is
 # installed in the current environment.
 JSD_PRESENT = False
 try:
-    import jupyter_server_documents
+    from jupyter_server_documents.events import JSD_ROOM_EVENT_URI
+    JUPYTER_COLLABORATION_EVENTS_URI = JSD_ROOM_EVENT_URI
     JSD_PRESENT = True
 except ImportError:
-    pass
+    try:
+        from jupyter_server_ydoc.utils import JUPYTER_COLLABORATION_EVENTS_URI
+    except ImportError:
+        # Fallback if neither event URI is available
+        JUPYTER_COLLABORATION_EVENTS_URI = (
+            "https://schema.jupyter.org/jupyter_collaboration/session/v1"
+        )
 
 if TYPE_CHECKING:
     from jupyterlab_chat.ychat import YChat
