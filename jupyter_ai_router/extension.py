@@ -13,7 +13,7 @@ try:
 except ImportError:
     # Fallback if jupyter-collaboration is not available
     JUPYTER_COLLABORATION_EVENTS_URI = (
-        "https://events.jupyter.org/jupyter_collaboration"
+        "https://schema.jupyter.org/jupyter_collaboration/session/v1"
     )
 
 # Define `JSD_PRESENT` to indicate whether `jupyter_server_documents` is
@@ -99,7 +99,7 @@ class RouterExtension(ExtensionApp):
             return await self._get_chat_jsd(room_id)
         else:
             return await self._get_chat_jcollab(room_id)
-    
+
     async def _get_chat_jcollab(self, room_id: str) -> YChat | None:
         """
         Method used to retrieve the `YChat` instance for a given room when
@@ -115,7 +115,7 @@ class RouterExtension(ExtensionApp):
         except Exception as e:
             self.log.error(f"Error getting chat document for {room_id}: {e}")
             return None
-    
+
     async def _get_chat_jsd(self, room_id: str) -> YChat | None:
         """
         Method used to retrieve the `YChat` instance for a given room when
@@ -131,7 +131,7 @@ class RouterExtension(ExtensionApp):
             jcollab_api = self.serverapp.web_app.settings["jupyter_server_ydoc"]
             yroom_manager = jcollab_api.yroom_manager
             yroom = yroom_manager.get_room(room_id)
-            
+
             def _on_ychat_reset(new_ychat: YChat):
                 self.router._on_chat_reset(room_id, new_ychat)
 
