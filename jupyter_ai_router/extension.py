@@ -8,22 +8,23 @@ from jupyter_ai_router.handlers import RouteHandler
 
 from .router import MessageRouter
 
-try:
-    from jupyter_server_ydoc.utils import JUPYTER_COLLABORATION_EVENTS_URI
-except ImportError:
-    # Fallback if jupyter-collaboration is not available
-    JUPYTER_COLLABORATION_EVENTS_URI = (
-        "https://events.jupyter.org/jupyter_collaboration"
-    )
-
-# Define `JSD_PRESENT` to indicate whether `jupyter_server_documents` is
+# Get the collaboration event URI, from JSD if present, otherwise from
+# jupyter-server-ydoc if present. Fallback to a constant.
+# Also define `JSD_PRESENT` to indicate whether `jupyter_server_documents` is
 # installed in the current environment.
 JSD_PRESENT = False
 try:
-    import jupyter_server_documents
+    from jupyter_server_documents.events import JSD_ROOM_EVENT_URI
+    JUPYTER_COLLABORATION_EVENTS_URI = JSD_ROOM_EVENT_URI
     JSD_PRESENT = True
 except ImportError:
-    pass
+    try:
+        from jupyter_server_ydoc.utils import JUPYTER_COLLABORATION_EVENTS_URI
+    except ImportError:
+        # Fallback if neither event URI is available
+        JUPYTER_COLLABORATION_EVENTS_URI = (
+            "https://schema.jupyter.org/jupyter_collaboration/session/v1"
+        )
 
 if TYPE_CHECKING:
     from jupyterlab_chat.ychat import YChat
@@ -99,7 +100,7 @@ class RouterExtension(ExtensionApp):
             return await self._get_chat_jsd(room_id)
         else:
             return await self._get_chat_jcollab(room_id)
-    
+
     async def _get_chat_jcollab(self, room_id: str) -> YChat | None:
         """
         Method used to retrieve the `YChat` instance for a given room when
@@ -115,7 +116,7 @@ class RouterExtension(ExtensionApp):
         except Exception as e:
             self.log.error(f"Error getting chat document for {room_id}: {e}")
             return None
-    
+
     async def _get_chat_jsd(self, room_id: str) -> YChat | None:
         """
         Method used to retrieve the `YChat` instance for a given room when
@@ -131,7 +132,7 @@ class RouterExtension(ExtensionApp):
             jcollab_api = self.serverapp.web_app.settings["jupyter_server_ydoc"]
             yroom_manager = jcollab_api.yroom_manager
             yroom = yroom_manager.get_room(room_id)
-            
+
             def _on_ychat_reset(new_ychat: YChat):
                 self.router._on_chat_reset(room_id, new_ychat)
 
