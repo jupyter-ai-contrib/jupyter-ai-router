@@ -238,23 +238,34 @@ class MessageRouter(LoggingConfigurable):
             # Remove forward slash from command for cleaner API
             clean_command = command[1:] if command.startswith("/") else command
 
-            # Route to slash command observers
-            self._notify_slash_cmd_observers(room_id, trimmed_message, clean_command)
+            # Route to slash command observers; fall through to regular message
+            # observers when no registered pattern matches
+            handled = self._notify_slash_cmd_observers(room_id, trimmed_message, clean_command)
+            if not handled:
+                self._notify_msg_observers(room_id, message)
         else:
             self._notify_msg_observers(room_id, message)
 
+    def _notify_slash_cmd_observers(self, room_id: str, message: Message, clean_command: str) -> bool:
+        """
+        Notify observers registered for slash commands.
 
-    def _notify_slash_cmd_observers(self, room_id: str, message: Message, clean_command: str) -> None:
-        """Notify observers registered for slash commands."""
+        Returns:
+            True if at least one observer matched.
+        """
         room_observers = self.slash_cmd_observers.get(room_id, {})
+        matched = False
 
         for registered_pattern, callbacks in room_observers.items():
             if matches_pattern(clean_command, registered_pattern):
+                matched = True
                 for callback in callbacks:
                     try:
                         callback(room_id, clean_command, message)
                     except Exception as e:
                         self.log.error(f"Slash command observer error for pattern '{registered_pattern}': {e}")
+
+        return matched
 
     def _notify_chat_init_observers(self, room_id: str, ychat: "YChat") -> None:
         """Notify all new chat observers."""
