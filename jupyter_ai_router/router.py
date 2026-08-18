@@ -7,17 +7,20 @@ This module provides a MessageRouter that:
 - Manages lifecycle and cleanup
 """
 
-from time import time
-from typing import Any, Callable, Dict, List, TYPE_CHECKING
-from functools import partial
 import re
 from dataclasses import replace
-from jupyterlab_chat.models import Message
-from pycrdt import ArrayEvent
-from traitlets.config import LoggingConfigurable
+from functools import partial
+from time import time
+from typing import Any, Callable
 
-if TYPE_CHECKING:
-    from jupyterlab_chat.ychat import YChat
+from jupyterlab_chat.models import (
+    BaseChatModel,
+    ChatMessageAction,
+    ChatMessageEvent,
+    Message,
+    MessageObserver,
+)
+from traitlets.config import LoggingConfigurable
 
 from .utils import get_first_word
 
@@ -41,7 +44,7 @@ def matches_pattern(word: str, pattern: str) -> bool:
 
 class MessageRouter(LoggingConfigurable):
     """
-    Router that manages ychat message routing.
+    Router that manages chat message routing.
 
     The Router provides three callback points:
     1. When new chats are initialized
@@ -53,55 +56,42 @@ class MessageRouter(LoggingConfigurable):
         super().__init__(*args, **kwargs)
 
         # Callback lists
-        self.chat_init_observers: List[Callable[[str, "YChat"], Any]] = []
-        self.chat_stop_observers: List[Callable[[str], Any]] = []
-        self.slash_cmd_observers: Dict[str, Dict[str, List[Callable[[str, str, Message], Any]]]] = {}
-        self.chat_msg_observers: Dict[str, List[Callable[[str, Message], Any]]] = {}
-        self.chat_reset_observers: List[Callable[[str, "YChat"], Any]] = []
+        self.chat_init_observers: list[Callable[[str, BaseChatModel], Any]] = []
+        self.chat_stop_observers: list[Callable[[str], Any]] = []
+        self.slash_cmd_observers: dict[str, dict[str, list[Callable[[str, str, Message], Any]]]] = {}
+        self.chat_msg_observers: dict[str, list[Callable[[str, Message], Any]]] = {}
 
         # Active chat rooms
-        self.active_chats: Dict[str, "YChat"] = {}
+        self.active_chats: dict[str, BaseChatModel] = {}
 
-        # Root observers for keeping track of incoming messages
-        self.message_observers: Dict[str, Callable] = {}
+        # Message observers (opaque handles for unsubscribing)
+        self.message_observers: dict[str, MessageObserver] = {}
 
         # Timestamp recorded when each room is connected. Messages with
         # timestamps older than this are pre-existing (loaded from disk) and
         # should not be routed.
-        self._connected_at: Dict[str, float] = {}
+        self._connected_at: dict[str, float] = {}
 
-    def observe_chat_init(self, callback: Callable[[str, "YChat"], Any]) -> None:
+    def observe_chat_init(self, callback: Callable[[str, BaseChatModel], Any]) -> None:
         """
         Register a callback for when new chats are initialized.
 
         Args:
-            callback: Function called with (room_id: str, ychat: YChat) when chat connects
+            callback: Function called with (room_id: str, chat: BaseChatModel) when chat connects
         """
         self.chat_init_observers.append(callback)
         self.log.info("Registered new chat initialization callback")
 
     def observe_chat_stop(self, callback: Callable[[str], Any]) -> None:
         """
-        Register a callback for when a chat room's YRoom is permanently stopped
-        (freed from memory). Only fires when `jupyter_server_documents` is
-        installed.
+        Register a callback for when a chat room is permanently closed
+        (freed from memory).
 
         Args:
             callback: Function called with (room_id: str) when the room is stopped.
         """
         self.chat_stop_observers.append(callback)
         self.log.info("Registered chat stop callback")
-
-    def observe_chat_reset(self, callback: Callable[[str, "YChat"], Any]) -> None:
-        """
-        Register a callback for when a `YChat` document is reset. This will only
-        occur if `jupyter_server_documents` is installed.
-
-        Args:
-            callback: Function called with (room_id: str, new_ychat: YChat) when chat resets
-        """
-        self.chat_reset_observers.append(callback)
-        self.log.info("Registered new chat reset callback")
 
     def observe_slash_cmd_msg(
         self, room_id: str, command_pattern: str, callback: Callable[[str, str, Message], Any]
@@ -142,33 +132,33 @@ class MessageRouter(LoggingConfigurable):
         self.chat_msg_observers[room_id].append(callback)
         self.log.info("Registered message callback")
 
-    def connect_chat(self, room_id: str, ychat: "YChat") -> None:
+    def connect_chat(self, room_id: str, chat: BaseChatModel) -> None:
         """
         Connect a new chat session to the router.
 
         Args:
             room_id: Unique identifier for the chat room
-            ychat: YChat instance for the room
+            chat: BaseChatModel instance for the room
         """
         if room_id in self.active_chats:
             self.log.warning(f"Chat {room_id} already connected to router")
             return
 
-        self.active_chats[room_id] = ychat
+        self.active_chats[room_id] = chat
 
         # Record the current time so we can distinguish pre-existing messages
         # (loaded from disk after this point) from genuinely new messages.
         self._connected_at[room_id] = time()
 
-        # Set up message observer
-        callback = partial(self._on_message_change, room_id, ychat)
-        ychat.ymessages.observe(callback)
-        self.message_observers[room_id] = callback
+        # Set up message observer using the transport-neutral API
+        callback = partial(self._on_message_event, room_id)
+        observer = chat.observe_messages(callback)
+        self.message_observers[room_id] = observer
 
         self.log.info(f"Connected chat {room_id} to router")
 
         # Notify new chat observers
-        self._notify_chat_init_observers(room_id, ychat)
+        self._notify_chat_init_observers(room_id, chat)
 
     def disconnect_chat(self, room_id: str) -> None:
         """
@@ -182,9 +172,9 @@ class MessageRouter(LoggingConfigurable):
 
         # Remove message observer
         if room_id in self.message_observers:
-            ychat = self.active_chats[room_id]
+            chat = self.active_chats[room_id]
             try:
-                ychat.ymessages.unobserve(self.message_observers[room_id])
+                chat.unobserve_messages(self.message_observers[room_id])
             except Exception as e:
                 self.log.warning(f"Failed to unobserve chat {room_id}: {e}")
             del self.message_observers[room_id]
@@ -195,21 +185,24 @@ class MessageRouter(LoggingConfigurable):
         self._connected_at.pop(room_id, None)
         self.log.info(f"Disconnected chat {room_id} from router")
 
-    def _on_message_change(
-        self, room_id: str, ychat: "YChat", events: ArrayEvent
-    ) -> None:
-        """Handle incoming messages from YChat."""
-        connected_at = self._connected_at.get(room_id, 0)
-        for change in events.delta:  # type: ignore[attr-defined]
-            if "insert" not in change.keys():
-                continue
+    def _on_message_event(self, room_id: str, event: ChatMessageEvent) -> None:
+        """Handle incoming message events from a chat model.
 
-            for item in change["insert"]:
-                raw = item.to_py()
-                # Skip messages that predate this connection (loaded from disk).
-                if raw["time"] < connected_at:
-                    continue
-                self._route_message(room_id, Message(**raw))
+        Only routes new messages received from clients (human users).
+        Ignores edits, server-sent messages, and streaming updates.
+        """
+        # Only route new messages from clients (human users)
+        if event.action != ChatMessageAction.CLIENT_MSG_RECEIVED:
+            return
+
+        message = event.message
+
+        # Skip messages that predate this connection (loaded from disk).
+        connected_at = self._connected_at.get(room_id, 0)
+        if message.time < connected_at:
+            return
+
+        self._route_message(room_id, message)
 
     def _route_message(self, room_id: str, message: Message) -> None:
         """
@@ -236,7 +229,7 @@ class MessageRouter(LoggingConfigurable):
             trimmed_message = replace(message, body=trimmed_body)
 
             # Remove forward slash from command for cleaner API
-            clean_command = command[1:] if command.startswith("/") else command
+            clean_command = command.removeprefix("/")
 
             # Route to slash command observers; fall through to regular message
             # observers when no registered pattern matches
@@ -267,11 +260,11 @@ class MessageRouter(LoggingConfigurable):
 
         return matched
 
-    def _notify_chat_init_observers(self, room_id: str, ychat: "YChat") -> None:
+    def _notify_chat_init_observers(self, room_id: str, chat: BaseChatModel) -> None:
         """Notify all new chat observers."""
         for callback in self.chat_init_observers:
             try:
-                callback(room_id, ychat)
+                callback(room_id, chat)
             except Exception as e:
                 self.log.error(f"New chat observer error for {room_id}: {e}")
 
@@ -291,21 +284,6 @@ class MessageRouter(LoggingConfigurable):
                 callback(room_id, message)
             except Exception as e:
                 self.log.error(f"Message observer error for {room_id}: {e}")
-
-    def _on_chat_reset(self, room_id, ychat: "YChat") -> None:
-        """
-        Method to call when the YChat undergoes a document reset, e.g. when the
-        `.chat` file is modified directly on disk.
-
-        NOTE: Document resets will only occur when `jupyter_server_documents` is
-        installed.
-        """
-        self.log.warning(f"Detected `YChat` document reset in room '{room_id}'.")
-        for callback in self.chat_reset_observers:
-            try:
-                callback(room_id, ychat)
-            except Exception as e:
-                self.log.error(f"Reset chat observer error for {room_id}: {e}")
 
     def cleanup(self) -> None:
         """Clean up router resources."""
