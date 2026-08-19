@@ -22,12 +22,15 @@ There are **no mocked chat models**. The same module runs unchanged in every
 matrix environment (see ``noxfile.py``); it detects the active transport from
 the live ``ChatManager`` and drives the corresponding real model.
 
-The one seam that is *not* real in RTC mode is the collaboration provider's YChat
-document creation (which requires a Yjs websocket client to drive). That is
-external to the router's responsibility; here we register a real ``YChat`` with
-the real ``ChatManager`` and emit the real lifecycle events through the real
-event bus, then drive real message inserts through the real ``observe_messages``
-bridge. This is called out explicitly so the boundary is honest.
+In RTC mode the chat model is a real ``YChat`` driven through its real public
+API (``add_message``), which writes to the Yjs document and fires the real
+``observe_messages`` bridge -- no Yjs websocket client is needed. The only glue
+not exercised here is the collaboration provider handing the ``YChat`` to the
+``ChatManager`` (``get_document``); that is jupyter-chat's responsibility, so we
+construct a real ``YChat`` and register it with the real ``ChatManager`` (the
+same approach jupyter-ai-persona-manager's tests use) and emit the real
+lifecycle events through the real event bus. The router only ever sees a real
+``BaseChatModel``.
 """
 from __future__ import annotations
 
@@ -125,16 +128,6 @@ def _make_ychat():
     return chat
 
 
-def _insert_ychat_message(chat, message: dict) -> None:
-    """Append a real message to the YChat shared array (as a client would)."""
-    from pycrdt import Map
-
-    # raw_time=False avoids the server-timestamp reschedule (an asyncio task).
-    message.setdefault("raw_time", False)
-    with chat._ydoc.transaction():
-        chat._ymessages.append(Map(message))
-
-
 # ---------------------------------------------------------------------------
 # Environment sanity (provider resolution)
 # ---------------------------------------------------------------------------
@@ -225,12 +218,10 @@ def test_three_observers_end_to_end(jp_serverapp, jp_asyncio_loop, tmp_path):
         router.observe_chat_msg(key, msg_rec)
         now = time.time()
         if rtc:
-            # A non-bot sender is classified CLIENT_MSG_RECEIVED by YChat's real
+            # Real public API: add_message writes to the Yjs doc, and a non-bot
+            # sender is classified CLIENT_MSG_RECEIVED by YChat's real
             # observe_messages bridge.
-            _insert_ychat_message(
-                chat,
-                {"id": "int-msg", "body": body, "time": now, "sender": "human-int"},
-            )
+            chat.add_message(NewMessage(body=body, sender="human-int"))
         else:
             # WsChatModel emits CLIENT_MSG_RECEIVED via its handler; this is the
             # exact call the real WSChatHandler makes on an incoming client frame
@@ -297,15 +288,7 @@ def test_slash_command_observer_end_to_end(jp_serverapp, jp_asyncio_loop, tmp_pa
         router.observe_slash_cmd_msg(key, "help", slash_rec)
         now = time.time()
         if rtc:
-            _insert_ychat_message(
-                chat,
-                {
-                    "id": "int-slash",
-                    "body": "/help topic",
-                    "time": now,
-                    "sender": "human-int",
-                },
-            )
+            chat.add_message(NewMessage(body="/help topic", sender="human-int"))
         else:
             message = Message(
                 id="int-slash", body="/help topic", sender="human-int", time=now
