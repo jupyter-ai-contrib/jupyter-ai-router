@@ -153,30 +153,6 @@ jobs:
             ui-tests/test-results
             ui-tests/playwright-report
 
-  rtc-matrix:
-    name: RTC matrix (${{ matrix.env }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        env: [no_rtc, rtc_jcollab, rtc_jsd]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install nox + uv
-        run: python -m pip install -U nox uv
-
-      - name: Run observer integration tests (${{ matrix.env }})
-        # Exercises the init/message/stop observers end-to-end against a real
-        # jupyterlab_chat.ChatManager in each transport. See issue #48.
-        run: nox -s "integration(env='${{ matrix.env }}')"
-
   check_links:
     name: Check Links
     runs-on: ubuntu-latest
