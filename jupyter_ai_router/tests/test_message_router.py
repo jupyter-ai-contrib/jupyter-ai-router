@@ -2,16 +2,17 @@
 Tests for MessageRouter functionality.
 """
 
+import tempfile
+from pathlib import Path
 from time import time
 from unittest.mock import Mock
 
 from jupyterlab_chat.models import (
-    BaseChatModel,
     ChatMessageAction,
     ChatMessageEvent,
     Message,
-    MessageObserver,
 )
+from jupyterlab_chat.websocket_model import WsChatModel
 
 from jupyter_ai_router.router import MessageRouter, matches_pattern
 from jupyter_ai_router.utils import get_first_word, is_persona
@@ -39,11 +40,16 @@ class TestUtils:
         assert is_persona("jupyter-ai-personas::custom::MyPersona") is True
 
 
-def _make_mock_chat() -> Mock:
-    """Create a mock BaseChatModel that returns a MessageObserver on observe."""
-    mock_chat = Mock(spec=BaseChatModel)
-    mock_chat.observe_messages.return_value = MessageObserver(_handle=object())
-    return mock_chat
+def _make_real_chat(root_dir) -> WsChatModel:
+    """Create a *real* RTC-free chat model (no mock).
+
+    ``observe_messages`` / ``unobserve_messages`` / ``add_message`` all behave
+    exactly as in production; only the chat model is real here -- the observer
+    callbacks remain plain test spies used to assert routing.
+    """
+    model = WsChatModel(path="test-room.chat", root_dir=Path(root_dir))
+    model.load_from_file()
+    return model
 
 
 class TestMessageRouter:
@@ -52,11 +58,15 @@ class TestMessageRouter:
     def setup_method(self):
         """Set up test fixtures."""
         self.router = MessageRouter()
-        self.mock_chat_init_callback = Mock()
+        self.chat_init_callback = Mock()
         self.mock_slash_cmd_callback = Mock()
         self.mock_msg_callback = Mock()
         self.mock_specific_cmd_callback = Mock()
-        self.mock_chat = _make_mock_chat()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.chat = _make_real_chat(self._tmp.name)
+
+    def teardown_method(self):
+        self._tmp.cleanup()
 
     def test_router_initialization(self):
         """Test router initializes correctly."""
@@ -68,8 +78,8 @@ class TestMessageRouter:
 
     def test_observe_chat_init(self):
         """Test registering chat init callback."""
-        self.router.observe_chat_init(self.mock_chat_init_callback)
-        assert self.mock_chat_init_callback in self.router.chat_init_observers
+        self.router.observe_chat_init(self.chat_init_callback)
+        assert self.chat_init_callback in self.router.chat_init_observers
 
     def test_observe_slash_cmd_msg(self):
         """Test registering slash command callback."""
@@ -88,27 +98,29 @@ class TestMessageRouter:
     def test_connect_chat(self):
         """Test connecting a chat to the router."""
         room_id = "test-room"
-        self.router.observe_chat_init(self.mock_chat_init_callback)
+        self.router.observe_chat_init(self.chat_init_callback)
 
-        self.router.connect_chat(room_id, self.mock_chat)
+        self.router.connect_chat(room_id, self.chat)
 
         # Should store the chat and call init observers
         assert room_id in self.router.active_chats
-        assert self.router.active_chats[room_id] == self.mock_chat
-        self.mock_chat_init_callback.assert_called_once_with(room_id, self.mock_chat)
-        # Should have called observe_messages
-        self.mock_chat.observe_messages.assert_called_once()
+        assert self.router.active_chats[room_id] is self.chat
+        self.chat_init_callback.assert_called_once_with(room_id, self.chat)
+        # Should have registered a real message observer on the real model
+        assert room_id in self.router.message_observers
+        assert len(self.chat._message_observers) == 1
 
     def test_disconnect_chat(self):
         """Test disconnecting a chat from the router."""
         room_id = "test-room"
-        self.router.connect_chat(room_id, self.mock_chat)
+        self.router.connect_chat(room_id, self.chat)
 
         self.router.disconnect_chat(room_id)
 
-        # Should remove the chat and call unobserve_messages
+        # Should remove the chat and unobserve the real model
         assert room_id not in self.router.active_chats
-        self.mock_chat.unobserve_messages.assert_called_once()
+        assert room_id not in self.router.message_observers
+        assert len(self.chat._message_observers) == 0
 
     def test_message_routing(self):
         """Test message routing to appropriate callbacks."""
@@ -136,8 +148,8 @@ class TestMessageRouter:
     def test_cleanup(self):
         """Test router cleanup."""
         room_id = "test-room"
-        self.router.connect_chat(room_id, self.mock_chat)
-        self.router.observe_chat_init(self.mock_chat_init_callback)
+        self.router.connect_chat(room_id, self.chat)
+        self.router.observe_chat_init(self.chat_init_callback)
 
         self.router.cleanup()
 
@@ -433,9 +445,13 @@ class TestPreExistingMessageFiltering:
 
     def setup_method(self):
         self.router = MessageRouter()
-        self.mock_chat = _make_mock_chat()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.chat = _make_real_chat(self._tmp.name)
         self.msg_callback = Mock()
         self.slash_callback = Mock()
+
+    def teardown_method(self):
+        self._tmp.cleanup()
 
     def _make_event(self, message: Message, action: ChatMessageAction = ChatMessageAction.CLIENT_MSG_RECEIVED) -> ChatMessageEvent:
         """Create a ChatMessageEvent from a Message."""
@@ -446,7 +462,7 @@ class TestPreExistingMessageFiltering:
         room_id = "test-room"
         old_time = time() - 60  # 1 minute ago
 
-        self.router.connect_chat(room_id, self.mock_chat)
+        self.router.connect_chat(room_id, self.chat)
         self.router.observe_chat_msg(room_id, self.msg_callback)
 
         # Simulate old messages arriving
@@ -462,7 +478,7 @@ class TestPreExistingMessageFiltering:
         """Messages with timestamps after connect_chat should be routed."""
         room_id = "test-room"
 
-        self.router.connect_chat(room_id, self.mock_chat)
+        self.router.connect_chat(room_id, self.chat)
         self.router.observe_chat_msg(room_id, self.msg_callback)
 
         new_time = time() + 1
@@ -478,7 +494,7 @@ class TestPreExistingMessageFiltering:
         room_id = "test-room"
         old_time = time() - 60
 
-        self.router.connect_chat(room_id, self.mock_chat)
+        self.router.connect_chat(room_id, self.chat)
         self.router.observe_chat_msg(room_id, self.msg_callback)
 
         new_time = time() + 1
@@ -497,7 +513,7 @@ class TestPreExistingMessageFiltering:
         room_id = "test-room"
         old_time = time() - 60
 
-        self.router.connect_chat(room_id, self.mock_chat)
+        self.router.connect_chat(room_id, self.chat)
         self.router.observe_slash_cmd_msg(room_id, "help", self.slash_callback)
 
         old_msg = Message(id="1", body="/help topic", sender="user", time=old_time)
@@ -508,7 +524,7 @@ class TestPreExistingMessageFiltering:
     def test_connected_at_cleaned_on_disconnect(self):
         """Disconnect should clean up the connected_at timestamp."""
         room_id = "test-room"
-        self.router.connect_chat(room_id, self.mock_chat)
+        self.router.connect_chat(room_id, self.chat)
         assert room_id in self.router._connected_at
 
         self.router.disconnect_chat(room_id)
@@ -518,7 +534,7 @@ class TestPreExistingMessageFiltering:
         """Only CLIENT_MSG_RECEIVED events should be routed."""
         room_id = "test-room"
 
-        self.router.connect_chat(room_id, self.mock_chat)
+        self.router.connect_chat(room_id, self.chat)
         self.router.observe_chat_msg(room_id, self.msg_callback)
 
         new_time = time() + 1
