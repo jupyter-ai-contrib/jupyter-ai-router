@@ -1,33 +1,18 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING
+
 import time
-from jupyter_events import EventLogger
+from typing import TYPE_CHECKING
+
 from jupyter_server.extension.application import ExtensionApp
+from jupyterlab_chat.events import ChatEventAction, ChatManager
 
 from jupyter_ai_router.handlers import RouteHandler
 
 from .router import MessageRouter
 
-# Get the collaboration event URI, from JSD if present, otherwise from
-# jupyter-server-ydoc if present. Fallback to a constant.
-# Also define `JSD_PRESENT` to indicate whether `jupyter_server_documents` is
-# installed in the current environment.
-JSD_PRESENT = False
-try:
-    from jupyter_server_documents.events import JSD_ROOM_EVENT_URI
-    JUPYTER_COLLABORATION_EVENTS_URI = JSD_ROOM_EVENT_URI
-    JSD_PRESENT = True
-except ImportError:
-    try:
-        from jupyter_server_ydoc.utils import JUPYTER_COLLABORATION_EVENTS_URI
-    except ImportError:
-        # Fallback if neither event URI is available
-        JUPYTER_COLLABORATION_EVENTS_URI = (
-            "https://schema.jupyter.org/jupyter_collaboration/session/v1"
-        )
-
 if TYPE_CHECKING:
-    from jupyterlab_chat.ychat import YChat
+    from jupyter_events import EventLogger
+    from jupyterlab_chat.models import BaseChatModel
 
 
 class RouterExtension(ExtensionApp):
@@ -54,102 +39,74 @@ class RouterExtension(ExtensionApp):
             self.settings["jupyter-ai"] = {}
         self.settings["jupyter-ai"]["router"] = self.router
 
-        # Listen for new chat room events
+        # Subscribe to ChatManager lifecycle events for chat room discovery
         if self.serverapp is not None:
-            self.event_logger = self.serverapp.web_app.settings["event_logger"]
-            self.event_logger.add_listener(
-                schema_id=JUPYTER_COLLABORATION_EVENTS_URI, listener=self._on_chat_event
-            )
+            import asyncio
+            asyncio.get_event_loop().create_task(self._setup_chat_manager())
 
         elapsed = time.time() - start
         self.log.info(f"Initialized RouterExtension in {elapsed:.2f}s")
 
+    async def _setup_chat_manager(self) -> None:
+        """Wait for ChatManager to appear in settings, then subscribe.
+
+        jupyterlab_chat may initialize after this extension, so the ChatManager
+        instance may not be in settings yet. This mirrors the pattern used by
+        PersonaManagerExtension to wait for the router.
+        """
+        import asyncio
+        while True:
+            chat_manager: ChatManager | None = self.serverapp.web_app.settings.get("chat_manager")
+            if chat_manager is not None:
+                chat_manager.observe_chats(self._on_chat_event)
+                self.log.info("Subscribed to ChatManager lifecycle events")
+                break
+            await asyncio.sleep(0.1)
+
     async def _on_chat_event(
         self, logger: EventLogger, schema_id: str, data: dict
     ) -> None:
-        """Handle chat room events and connect new chats to router."""
-        # Only handle chat room initialization events
-        if not (
-            data["room"].startswith("text:chat:")
-            and data["action"] == "initialize"
-            and data["msg"] == "Room initialized"
-        ):
-            return
+        """Handle chat lifecycle events from the ChatManager."""
+        action = data.get("action")
+        path = data.get("path", "")
+        room_id = data.get("room_id") or path
 
-        room_id = data["room"]
-        self.log.info(f"New chat room detected: {room_id}")
+        if action == ChatEventAction.OPENED.value:
+            self.log.info(f"New chat detected: {room_id}")
 
-        # Get YChat document for the room
-        ychat = await self._get_chat(room_id)
-        if ychat is None:
-            self.log.error(f"Failed to get YChat for room {room_id}")
-            return
+            # Retrieve the chat model from ChatManager
+            chat = self._get_chat(room_id)
+            if chat is None:
+                self.log.error(f"Failed to get chat model for {room_id}")
+                return
 
-        # Connect chat to router
-        self.router.connect_chat(room_id, ychat)
+            # Connect chat to router
+            self.router.connect_chat(room_id, chat)
 
-    async def _get_chat(self, room_id: str) -> YChat | None:
+        elif action == ChatEventAction.CLOSED.value:
+            self.log.info(f"Chat closed: {room_id}")
+            self.router.disconnect_chat(room_id)
+            self.router._notify_chat_stop_observers(room_id)
+
+        elif action == ChatEventAction.DELETED.value:
+            self.log.info(f"Chat deleted: {room_id}")
+            self.router.disconnect_chat(room_id)
+            self.router._notify_chat_stop_observers(room_id)
+
+    def _get_chat(self, room_id: str) -> BaseChatModel | None:
         """
-        Get YChat instance for a room ID.
+        Get the chat model for a room/path using the ChatManager.
 
-        Dispatches to either `_get_chat_jcollab()` or `_get_chat_jsd()` based on
-        whether `jupyter_server_documents` is installed.
+        The ChatManager handles the transport difference internally:
+        - RTC mode: resolves the YChat from the collaboration provider
+        - WebSocket mode: returns the WsChatModel from its registry
         """
-
-        if JSD_PRESENT:
-            return await self._get_chat_jsd(room_id)
-        else:
-            return await self._get_chat_jcollab(room_id)
-
-    async def _get_chat_jcollab(self, room_id: str) -> YChat | None:
-        """
-        Method used to retrieve the `YChat` instance for a given room when
-        `jupyter_server_documents` **is not** installed.
-        """
-        if not self.serverapp:
+        chat_manager: ChatManager | None = self.serverapp.web_app.settings.get("chat_manager")
+        if chat_manager is None:
+            self.log.error("ChatManager not available in settings")
             return None
 
-        try:
-            collaboration = self.serverapp.web_app.settings["jupyter_server_ydoc"]
-            document = await collaboration.get_document(room_id=room_id, copy=False)
-            return document
-        except Exception as e:
-            self.log.error(f"Error getting chat document for {room_id}: {e}")
-            return None
-
-    async def _get_chat_jsd(self, room_id: str) -> YChat | None:
-        """
-        Method used to retrieve the `YChat` instance for a given room when
-        `jupyter_server_documents` **is** installed.
-
-        This method uniquely attaches a callback which is fired whenever the
-        `YChat` is reset.
-        """
-        if not self.serverapp:
-            return None
-
-        try:
-            jcollab_api = self.serverapp.web_app.settings["jupyter_server_ydoc"]
-            yroom_manager = jcollab_api.yroom_manager
-            yroom = yroom_manager.get_room(room_id)
-
-            def _on_ychat_reset(new_ychat: YChat):
-                self.router._on_chat_reset(room_id, new_ychat)
-
-            ychat = await yroom.get_jupyter_ydoc(on_reset=_on_ychat_reset)
-
-            def _on_yroom_stop():
-                self.router.disconnect_chat(room_id)
-                self.router._notify_chat_stop_observers(room_id)
-
-            yroom.add_stop_callback(_on_yroom_stop)
-
-            return ychat
-        except Exception as e:
-            self.log.error(f"Error getting chat document for {room_id}: {e}")
-            return None
-
-
+        return chat_manager.get(room_id)
 
     async def stop_extension(self):
         """Clean up router when extension stops."""

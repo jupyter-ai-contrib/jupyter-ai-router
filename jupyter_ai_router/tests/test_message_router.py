@@ -2,11 +2,17 @@
 Tests for MessageRouter functionality.
 """
 
-import pytest
 from time import time
-from unittest.mock import Mock, MagicMock, patch
-from jupyterlab_chat.models import Message
-from jupyterlab_chat.ychat import YChat
+from unittest.mock import Mock
+
+from jupyterlab_chat.models import (
+    BaseChatModel,
+    ChatMessageAction,
+    ChatMessageEvent,
+    Message,
+    MessageObserver,
+)
+
 from jupyter_ai_router.router import MessageRouter, matches_pattern
 from jupyter_ai_router.utils import get_first_word, is_persona
 
@@ -33,6 +39,13 @@ class TestUtils:
         assert is_persona("jupyter-ai-personas::custom::MyPersona") is True
 
 
+def _make_mock_chat() -> Mock:
+    """Create a mock BaseChatModel that returns a MessageObserver on observe."""
+    mock_chat = Mock(spec=BaseChatModel)
+    mock_chat.observe_messages.return_value = MessageObserver(_handle=object())
+    return mock_chat
+
+
 class TestMessageRouter:
     """Test MessageRouter functionality."""
 
@@ -43,8 +56,7 @@ class TestMessageRouter:
         self.mock_slash_cmd_callback = Mock()
         self.mock_msg_callback = Mock()
         self.mock_specific_cmd_callback = Mock()
-        self.mock_ychat = Mock(spec=YChat)
-        self.mock_ychat.ymessages = Mock()
+        self.mock_chat = _make_mock_chat()
 
     def test_router_initialization(self):
         """Test router initializes correctly."""
@@ -78,22 +90,25 @@ class TestMessageRouter:
         room_id = "test-room"
         self.router.observe_chat_init(self.mock_chat_init_callback)
 
-        self.router.connect_chat(room_id, self.mock_ychat)
+        self.router.connect_chat(room_id, self.mock_chat)
 
         # Should store the chat and call init observers
         assert room_id in self.router.active_chats
-        assert self.router.active_chats[room_id] == self.mock_ychat
-        self.mock_chat_init_callback.assert_called_once_with(room_id, self.mock_ychat)
+        assert self.router.active_chats[room_id] == self.mock_chat
+        self.mock_chat_init_callback.assert_called_once_with(room_id, self.mock_chat)
+        # Should have called observe_messages
+        self.mock_chat.observe_messages.assert_called_once()
 
     def test_disconnect_chat(self):
         """Test disconnecting a chat from the router."""
         room_id = "test-room"
-        self.router.connect_chat(room_id, self.mock_ychat)
+        self.router.connect_chat(room_id, self.mock_chat)
 
         self.router.disconnect_chat(room_id)
 
-        # Should remove the chat
+        # Should remove the chat and call unobserve_messages
         assert room_id not in self.router.active_chats
+        self.mock_chat.unobserve_messages.assert_called_once()
 
     def test_message_routing(self):
         """Test message routing to appropriate callbacks."""
@@ -121,7 +136,7 @@ class TestMessageRouter:
     def test_cleanup(self):
         """Test router cleanup."""
         room_id = "test-room"
-        self.router.connect_chat(room_id, self.mock_ychat)
+        self.router.connect_chat(room_id, self.mock_chat)
         self.router.observe_chat_init(self.mock_chat_init_callback)
 
         self.router.cleanup()
@@ -418,36 +433,28 @@ class TestPreExistingMessageFiltering:
 
     def setup_method(self):
         self.router = MessageRouter()
-        self.mock_ychat = Mock(spec=YChat)
-        self.mock_ychat.ymessages = Mock()
+        self.mock_chat = _make_mock_chat()
         self.msg_callback = Mock()
         self.slash_callback = Mock()
 
-    def _make_event(self, messages):
-        """Create a mock ArrayEvent with insert delta from Message dicts."""
-        items = []
-        for m in messages:
-            item = Mock()
-            item.to_py.return_value = m
-            items.append(item)
-        event = Mock()
-        event.delta = [{"insert": items}]
-        return event
+    def _make_event(self, message: Message, action: ChatMessageAction = ChatMessageAction.CLIENT_MSG_RECEIVED) -> ChatMessageEvent:
+        """Create a ChatMessageEvent from a Message."""
+        return ChatMessageEvent(action=action, message=message)
 
     def test_old_messages_skipped_on_reconnect(self):
         """Messages with timestamps before connect_chat should not be routed."""
         room_id = "test-room"
         old_time = time() - 60  # 1 minute ago
 
-        self.router.connect_chat(room_id, self.mock_ychat)
+        self.router.connect_chat(room_id, self.mock_chat)
         self.router.observe_chat_msg(room_id, self.msg_callback)
 
-        # Simulate Yjs sync delivering old messages from disk
-        event = self._make_event([
-            {"id": "1", "body": "old msg 1", "sender": "user", "time": old_time},
-            {"id": "2", "body": "old msg 2", "sender": "user", "time": old_time - 10},
-        ])
-        self.router._on_message_change(room_id, self.mock_ychat, event)
+        # Simulate old messages arriving
+        old_msg1 = Message(id="1", body="old msg 1", sender="user", time=old_time)
+        old_msg2 = Message(id="2", body="old msg 2", sender="user", time=old_time - 10)
+
+        self.router._on_message_event(room_id, self._make_event(old_msg1))
+        self.router._on_message_event(room_id, self._make_event(old_msg2))
 
         self.msg_callback.assert_not_called()
 
@@ -455,33 +462,31 @@ class TestPreExistingMessageFiltering:
         """Messages with timestamps after connect_chat should be routed."""
         room_id = "test-room"
 
-        self.router.connect_chat(room_id, self.mock_ychat)
+        self.router.connect_chat(room_id, self.mock_chat)
         self.router.observe_chat_msg(room_id, self.msg_callback)
 
         new_time = time() + 1
-        event = self._make_event([
-            {"id": "1", "body": "new msg", "sender": "user", "time": new_time},
-        ])
-        self.router._on_message_change(room_id, self.mock_ychat, event)
+        new_msg = Message(id="1", body="new msg", sender="user", time=new_time)
+        self.router._on_message_event(room_id, self._make_event(new_msg))
 
         self.msg_callback.assert_called_once()
         routed_msg = self.msg_callback.call_args[0][1]
         assert routed_msg.body == "new msg"
 
     def test_mixed_old_and_new_messages(self):
-        """Only new messages should be routed when old and new arrive together."""
+        """Only new messages should be routed when old and new arrive."""
         room_id = "test-room"
         old_time = time() - 60
 
-        self.router.connect_chat(room_id, self.mock_ychat)
+        self.router.connect_chat(room_id, self.mock_chat)
         self.router.observe_chat_msg(room_id, self.msg_callback)
 
         new_time = time() + 1
-        event = self._make_event([
-            {"id": "1", "body": "old", "sender": "user", "time": old_time},
-            {"id": "2", "body": "new", "sender": "user", "time": new_time},
-        ])
-        self.router._on_message_change(room_id, self.mock_ychat, event)
+        old_msg = Message(id="1", body="old", sender="user", time=old_time)
+        new_msg = Message(id="2", body="new", sender="user", time=new_time)
+
+        self.router._on_message_event(room_id, self._make_event(old_msg))
+        self.router._on_message_event(room_id, self._make_event(new_msg))
 
         assert self.msg_callback.call_count == 1
         routed_msg = self.msg_callback.call_args[0][1]
@@ -492,21 +497,53 @@ class TestPreExistingMessageFiltering:
         room_id = "test-room"
         old_time = time() - 60
 
-        self.router.connect_chat(room_id, self.mock_ychat)
+        self.router.connect_chat(room_id, self.mock_chat)
         self.router.observe_slash_cmd_msg(room_id, "help", self.slash_callback)
 
-        event = self._make_event([
-            {"id": "1", "body": "/help topic", "sender": "user", "time": old_time},
-        ])
-        self.router._on_message_change(room_id, self.mock_ychat, event)
+        old_msg = Message(id="1", body="/help topic", sender="user", time=old_time)
+        self.router._on_message_event(room_id, self._make_event(old_msg))
 
         self.slash_callback.assert_not_called()
 
     def test_connected_at_cleaned_on_disconnect(self):
         """Disconnect should clean up the connected_at timestamp."""
         room_id = "test-room"
-        self.router.connect_chat(room_id, self.mock_ychat)
+        self.router.connect_chat(room_id, self.mock_chat)
         assert room_id in self.router._connected_at
 
         self.router.disconnect_chat(room_id)
         assert room_id not in self.router._connected_at
+
+    def test_non_client_messages_ignored(self):
+        """Only CLIENT_MSG_RECEIVED events should be routed."""
+        room_id = "test-room"
+
+        self.router.connect_chat(room_id, self.mock_chat)
+        self.router.observe_chat_msg(room_id, self.msg_callback)
+
+        new_time = time() + 1
+        msg = Message(id="1", body="server msg", sender="persona", time=new_time)
+
+        # Server-sent messages should be ignored
+        self.router._on_message_event(
+            room_id, ChatMessageEvent(action=ChatMessageAction.SERVER_MSG_SENT, message=msg)
+        )
+        self.msg_callback.assert_not_called()
+
+        # Server updates should be ignored
+        self.router._on_message_event(
+            room_id, ChatMessageEvent(action=ChatMessageAction.SERVER_MSG_UPDATED, message=msg)
+        )
+        self.msg_callback.assert_not_called()
+
+        # Client edits should be ignored
+        self.router._on_message_event(
+            room_id, ChatMessageEvent(action=ChatMessageAction.CLIENT_MSG_EDITED, message=msg)
+        )
+        self.msg_callback.assert_not_called()
+
+        # Only client received messages are routed
+        self.router._on_message_event(
+            room_id, ChatMessageEvent(action=ChatMessageAction.CLIENT_MSG_RECEIVED, message=msg)
+        )
+        self.msg_callback.assert_called_once()
