@@ -41,14 +41,27 @@ class RouterExtension(ExtensionApp):
 
         # Subscribe to ChatManager lifecycle events for chat room discovery
         if self.serverapp is not None:
-            chat_manager: ChatManager | None = self.serverapp.web_app.settings.get("chat_manager")
-            if chat_manager is not None:
-                chat_manager.observe_chats(self._on_chat_event)
-            else:
-                self.log.error("ChatManager not found — jupyterlab_chat may not be installed")
+            import asyncio
+            asyncio.get_event_loop().create_task(self._setup_chat_manager())
 
         elapsed = time.time() - start
         self.log.info(f"Initialized RouterExtension in {elapsed:.2f}s")
+
+    async def _setup_chat_manager(self) -> None:
+        """Wait for ChatManager to appear in settings, then subscribe.
+
+        jupyterlab_chat may initialize after this extension, so the ChatManager
+        instance may not be in settings yet. This mirrors the pattern used by
+        PersonaManagerExtension to wait for the router.
+        """
+        import asyncio
+        while True:
+            chat_manager: ChatManager | None = self.serverapp.web_app.settings.get("chat_manager")
+            if chat_manager is not None:
+                chat_manager.observe_chats(self._on_chat_event)
+                self.log.info("Subscribed to ChatManager lifecycle events")
+                break
+            await asyncio.sleep(0.1)
 
     async def _on_chat_event(
         self, logger: EventLogger, schema_id: str, data: dict
