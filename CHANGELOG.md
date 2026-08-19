@@ -2,6 +2,25 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## 0.1.0a0
+
+([Full Changelog](https://github.com/jupyter-ai-contrib/jupyter-ai-router/compare/v0.0.7...d308d5d797dea5c7bd5af5e10fc51d6394b4579c))
+
+### Enhancements made
+
+- Decouple router from YChat and RTC providers [#46](https://github.com/jupyter-ai-contrib/jupyter-ai-router/pull/46) ([@bhavana-nair](https://github.com/bhavana-nair), [@dlqqq](https://github.com/dlqqq))
+
+### Contributors to this release
+
+The following people contributed discussions, new ideas, code and documentation contributions, and review.
+See [our definition of contributors](https://github-activity.readthedocs.io/en/latest/use/#how-does-this-tool-define-contributions-in-the-reports).
+
+([GitHub contributors page for this release](https://github.com/jupyter-ai-contrib/jupyter-ai-router/graphs/contributors?from=2026-08-08&to=2026-08-19&type=c))
+
+@bhavana-nair ([activity](https://github.com/search?q=repo%3Ajupyter-ai-contrib%2Fjupyter-ai-router+involves%3Abhavana-nair+updated%3A2026-08-08..2026-08-19&type=Issues)) | @dlqqq ([activity](https://github.com/search?q=repo%3Ajupyter-ai-contrib%2Fjupyter-ai-router+involves%3Adlqqq+updated%3A2026-08-08..2026-08-19&type=Issues))
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## 0.0.7
 
 ([Full Changelog](https://github.com/jupyter-ai-contrib/jupyter-ai-router/compare/v0.0.6...b3391760646fa56e715e8730706eb6334d940336))
@@ -18,8 +37,6 @@ See [our definition of contributors](https://github-activity.readthedocs.io/en/l
 ([GitHub contributors page for this release](https://github.com/jupyter-ai-contrib/jupyter-ai-router/graphs/contributors?from=2026-07-29&to=2026-08-08&type=c))
 
 @bhavana-nair ([activity](https://github.com/search?q=repo%3Ajupyter-ai-contrib%2Fjupyter-ai-router+involves%3Abhavana-nair+updated%3A2026-07-29..2026-08-08&type=Issues)) | @dlqqq ([activity](https://github.com/search?q=repo%3Ajupyter-ai-contrib%2Fjupyter-ai-router+involves%3Adlqqq+updated%3A2026-07-29..2026-08-08&type=Issues))
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## 0.0.6
 
