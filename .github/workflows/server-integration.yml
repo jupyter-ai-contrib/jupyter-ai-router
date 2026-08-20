@@ -1,4 +1,4 @@
-name: Server integration
+name: Server
 
 on:
   push:
@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   test-matrix:
-    name: Test matrix (${{ matrix.label }})
+    name: Integration tests (${{ matrix.label }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
