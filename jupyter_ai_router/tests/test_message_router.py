@@ -190,6 +190,58 @@ class TestRouteMessageLogic:
         )
         assert len(boom.calls) == 1
 
+    def test_router_starts_empty(self):
+        router = MessageRouter()
+        assert not router.chat_init_observers
+        assert not router.chat_stop_observers
+        assert not router.chat_msg_observers
+        assert not router.slash_cmd_observers
+        assert not router.active_chats
+
+    def test_multiple_observers_same_pattern_all_fire(self):
+        room = "room"
+        a, b = _Recorder(), _Recorder()
+        self.router.observe_slash_cmd_msg(room, "help", a)
+        self.router.observe_slash_cmd_msg(room, "help", b)
+        self.router._route_message(
+            room, Message(id="1", body="/help topic", sender="u", time=1)
+        )
+        assert a.calls[0][2].body == "topic"
+        assert b.calls[0][2].body == "topic"
+
+    def test_distinct_patterns_route_to_distinct_observers(self):
+        room = "room"
+        help_rec, export_rec = _Recorder(), _Recorder()
+        self.router.observe_slash_cmd_msg(room, "help", help_rec)
+        self.router.observe_slash_cmd_msg(room, "export-.*", export_rec)
+        self.router._route_message(
+            room, Message(id="1", body="/help x", sender="u", time=1)
+        )
+        assert help_rec.calls and not export_rec.calls
+        self.router._route_message(
+            room, Message(id="2", body="/export-csv f.csv", sender="u", time=2)
+        )
+        assert export_rec.calls[0][1] == "export-csv"
+        assert export_rec.calls[0][2].body == "f.csv"
+
+    def test_trimming_edge_cases(self):
+        room = "room"
+        rec = _Recorder()
+        self.router.observe_slash_cmd_msg(room, "test.*", rec)
+        cases = [
+            ("/test hello world", "test", "hello world"),
+            ("/test", "test", ""),
+            ("/test   multi   spaces", "test", "multi   spaces"),
+            ("/test-command with-args", "test-command", "with-args"),
+        ]
+        for body, command, trimmed in cases:
+            rec.calls.clear()
+            self.router._route_message(
+                room, Message(id="1", body=body, sender="u", time=1)
+            )
+            assert rec.calls[0][1] == command
+            assert rec.calls[0][2].body == trimmed
+
 
 # ===========================================================================
 # Real-server helpers
@@ -416,6 +468,7 @@ def test_disconnect_unobserves_real_model(jp_serverapp, jp_asyncio_loop, jp_root
         router.disconnect_chat(key)
         assert key not in router.active_chats
         assert key not in router.message_observers
+        assert key not in router._connected_at
         # A message delivered after disconnect must not be routed.
         rec = _Recorder()
         router.observe_chat_msg(key, rec)
@@ -478,5 +531,30 @@ def test_only_client_messages_routed(jp_serverapp, jp_asyncio_loop, jp_root_dir)
             key, ChatMessageEvent(ChatMessageAction.CLIENT_MSG_RECEIVED, msg)
         )
         assert len(rec.calls) == 1
+
+    jp_asyncio_loop.run_until_complete(scenario())
+
+
+def test_cleanup_clears_router(jp_serverapp, jp_asyncio_loop, jp_root_dir):
+    """``cleanup`` disconnects every active chat and clears all observers."""
+    app = jp_serverapp
+    router = _router(app)
+    router.observe_chat_init(_Recorder())
+    path = _chat_file(jp_root_dir, "router-cleanup.chat")
+
+    async def scenario():
+        await _wait_router_subscribed(app)
+        _model, key = await _open_chat(app, path)
+        router.observe_chat_msg(key, _Recorder())
+        router.observe_slash_cmd_msg(key, "help", _Recorder())
+        assert key in router.active_chats
+
+        router.cleanup()
+
+        assert not router.active_chats
+        assert not router.chat_init_observers
+        assert not router.chat_stop_observers
+        assert not router.chat_msg_observers
+        assert not router.slash_cmd_observers
 
     jp_asyncio_loop.run_until_complete(scenario())
