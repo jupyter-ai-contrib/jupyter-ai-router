@@ -894,6 +894,47 @@ def test_only_client_messages_routed(jp_serverapp, jp_asyncio_loop, jp_root_dir)
     jp_asyncio_loop.run_until_complete(scenario())
 
 
+def test_stop_observer_fires_on_real_ws_disconnect(
+    jp_serverapp, jp_asyncio_loop, jp_ws_fetch, jp_root_dir
+):
+    """A real client disconnect must fire observe_chat_stop (issue #47).
+
+    Unlike the lifecycle test (which asks the ChatManager to close the chat),
+    this drives the *origination* end-to-end: a real WebSocket client connects to
+    the jupyterlab_chat handler and then disconnects, with no manual ChatManager
+    calls. The handler's ``on_close`` -> ``ws_client_gone`` -> ``_free(CLOSED)``
+    must reach the router and fire the stop observer.
+
+    RTC-free only: the plain WS chat endpoint exists only when RTC is off, and
+    real RTC room teardown ("clean") is emitted internally by the collaboration
+    provider (covered by the reaction test, not driven by a client here).
+    """
+    app = jp_serverapp
+    if _chat_manager(app)._rtc_enabled:
+        pytest.skip("WS chat endpoint exists only RTC-free; RTC 'clean' is provider-internal")
+    router = _router(app)
+    stop = _Recorder()
+    router.observe_chat_stop(stop)
+    path = _chat_file(jp_root_dir, "router-realstop.chat")
+
+    async def scenario():
+        await _wait_router_subscribed(app)
+        # Real client connects -> ws_open -> OPENED -> router connects.
+        ws = await jp_ws_fetch("api", "jupyter-chat", "ws", params={"path": path})
+        assert await _pump_until(
+            lambda: path in router.active_chats
+        ), "router did not connect the chat on a real ws open"
+        # Real client disconnects -> on_close -> ws_client_gone -> _free(CLOSED).
+        ws.close()
+        assert await _pump_until(
+            lambda: any(stop.calls)
+        ), "observe_chat_stop did not fire on a real ws disconnect"
+        assert stop.calls[0][0] == path
+        assert path not in router.active_chats
+
+    jp_asyncio_loop.run_until_complete(scenario())
+
+
 def test_cleanup_clears_router(jp_serverapp, jp_asyncio_loop, jp_root_dir):
     """``cleanup`` disconnects every active chat and clears all observers."""
     app = jp_serverapp
