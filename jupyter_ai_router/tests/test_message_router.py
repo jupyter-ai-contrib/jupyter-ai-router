@@ -1,20 +1,45 @@
-"""
-Tests for MessageRouter functionality.
-"""
+"""Tests for MessageRouter functionality.
 
+Every test runs against a real, booted jupyter_server (see the top-level
+conftest). This file preserves the full router test suite that shipped in
+jupyter_ai_router 0.1.0a0 -- with the previously mocked chat model replaced by a
+real ``WsChatModel`` -- and adds RTC matrix integration tests (issue #48) that
+exercise the three lifecycle observers end-to-end against the model the live
+``ChatManager`` resolves for the active transport (``WsChatModel`` or ``YChat``).
+"""
+from __future__ import annotations
+
+import asyncio
+import inspect
+import os
+import tempfile
+import uuid
+from pathlib import Path
 from time import time
+from typing import Any, Callable
 from unittest.mock import Mock
 
+import pytest
+
+from jupyterlab_chat.events import (
+    CHAT_ROOM_EVENT_SCHEMA_ID,
+    JUPYTER_COLLABORATION_EVENTS_URI,
+)
 from jupyterlab_chat.models import (
-    BaseChatModel,
     ChatMessageAction,
     ChatMessageEvent,
     Message,
-    MessageObserver,
+    NewMessage,
 )
+from jupyterlab_chat.websocket_model import WsChatModel
 
 from jupyter_ai_router.router import MessageRouter, matches_pattern
 from jupyter_ai_router.utils import get_first_word, is_persona
+
+#: Injected by the nox matrix; empty/unset -> no expected provider.
+EXPECTED_RTC_PROVIDER = os.environ.get("EXPECTED_RTC_PROVIDER") or None
+#: Set to "1" by the nox matrix; gates the env-specific provider assertion.
+RTC_MATRIX = os.environ.get("RTC_MATRIX") == "1"
 
 
 class TestUtils:
@@ -39,11 +64,15 @@ class TestUtils:
         assert is_persona("jupyter-ai-personas::custom::MyPersona") is True
 
 
-def _make_mock_chat() -> Mock:
-    """Create a mock BaseChatModel that returns a MessageObserver on observe."""
-    mock_chat = Mock(spec=BaseChatModel)
-    mock_chat.observe_messages.return_value = MessageObserver(_handle=object())
-    return mock_chat
+def _make_real_chat(root_dir) -> WsChatModel:
+    """Create a *real* RTC-free chat model (no mock).
+
+    ``observe_messages`` / ``unobserve_messages`` / ``add_message`` behave exactly
+    as in production; only the observer callbacks stay plain test spies.
+    """
+    model = WsChatModel(path="test-room.chat", root_dir=Path(root_dir))
+    model.load_from_file()
+    return model
 
 
 class TestMessageRouter:
@@ -56,7 +85,11 @@ class TestMessageRouter:
         self.mock_slash_cmd_callback = Mock()
         self.mock_msg_callback = Mock()
         self.mock_specific_cmd_callback = Mock()
-        self.mock_chat = _make_mock_chat()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.mock_chat = _make_real_chat(self._tmp.name)
+
+    def teardown_method(self):
+        self._tmp.cleanup()
 
     def test_router_initialization(self):
         """Test router initializes correctly."""
@@ -96,8 +129,9 @@ class TestMessageRouter:
         assert room_id in self.router.active_chats
         assert self.router.active_chats[room_id] == self.mock_chat
         self.mock_chat_init_callback.assert_called_once_with(room_id, self.mock_chat)
-        # Should have called observe_messages
-        self.mock_chat.observe_messages.assert_called_once()
+        # Should have registered a real message observer on the real model
+        assert room_id in self.router.message_observers
+        assert len(self.mock_chat._message_observers) == 1
 
     def test_disconnect_chat(self):
         """Test disconnecting a chat from the router."""
@@ -106,9 +140,10 @@ class TestMessageRouter:
 
         self.router.disconnect_chat(room_id)
 
-        # Should remove the chat and call unobserve_messages
+        # Should remove the chat and unobserve the real model
         assert room_id not in self.router.active_chats
-        self.mock_chat.unobserve_messages.assert_called_once()
+        assert room_id not in self.router.message_observers
+        assert len(self.mock_chat._message_observers) == 0
 
     def test_message_routing(self):
         """Test message routing to appropriate callbacks."""
@@ -433,9 +468,13 @@ class TestPreExistingMessageFiltering:
 
     def setup_method(self):
         self.router = MessageRouter()
-        self.mock_chat = _make_mock_chat()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.mock_chat = _make_real_chat(self._tmp.name)
         self.msg_callback = Mock()
         self.slash_callback = Mock()
+
+    def teardown_method(self):
+        self._tmp.cleanup()
 
     def _make_event(self, message: Message, action: ChatMessageAction = ChatMessageAction.CLIENT_MSG_RECEIVED) -> ChatMessageEvent:
         """Create a ChatMessageEvent from a Message."""
@@ -547,3 +586,375 @@ class TestPreExistingMessageFiltering:
             room_id, ChatMessageEvent(action=ChatMessageAction.CLIENT_MSG_RECEIVED, message=msg)
         )
         self.msg_callback.assert_called_once()
+
+
+
+# ===========================================================================
+# RTC matrix integration tests (issue #48): the three observers end-to-end
+# against the model the live ChatManager resolves for the active transport.
+# ===========================================================================
+class _Recorder:
+    """A plain recording callback -- not a mock, just a list-appending callable."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    def __call__(self, *args: Any) -> None:
+        self.calls.append(args)
+
+# ===========================================================================
+# Real-server helpers
+# ===========================================================================
+def _settings(app):
+    return app.web_app.settings
+
+
+def _router(app) -> MessageRouter:
+    return _settings(app)["jupyter-ai"]["router"]
+
+
+def _chat_manager(app):
+    return _settings(app)["chat_manager"]
+
+
+def _event_logger(app):
+    return _settings(app).get("event_logger")
+
+
+def _has_listener(event_logger, schema_id: str) -> bool:
+    """Whether any listener is registered for ``schema_id`` (tolerant to
+    jupyter_events internal attribute naming across versions)."""
+    if event_logger is None:
+        return False
+    for attr in ("_modified_listeners", "_unmodified_listeners", "_listeners"):
+        registry = getattr(event_logger, attr, None)
+        if registry and registry.get(schema_id):
+            return True
+    return False
+
+
+async def _pump_until(
+    condition: Callable[[], bool], timeout: float = 5.0, interval: float = 0.02
+) -> bool:
+    """Turn the running event loop until ``condition()`` is truthy or times out."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if condition():
+            return True
+        await asyncio.sleep(interval)
+    return condition()
+
+
+async def _wait_router_subscribed(app) -> None:
+    event_logger = _event_logger(app)
+    assert await _pump_until(
+        lambda: _has_listener(event_logger, CHAT_ROOM_EVENT_SCHEMA_ID)
+    ), "RouterExtension never subscribed to the ChatManager lifecycle bus"
+
+
+async def _open_chat(app, path: str):
+    """Open a chat the way the server does and return ``(model, key)`` from the
+    live ``ChatManager``.
+
+    ``model`` is a real ``WsChatModel`` (RTC-free) or ``YChat`` (RTC). ``key`` is
+    the identifier the router uses in ``active_chats`` (room id under RTC, else
+    the path).
+    """
+    manager = _chat_manager(app)
+    router = _router(app)
+    if manager._rtc_enabled:
+        ydoc_api = _settings(app)["jupyter_server_ydoc"]
+        kwargs = dict(path=path, content_type="chat", file_format="text", copy=False)
+        # jupyter_collaboration needs create=True; the JSD shim auto-creates and
+        # has no such parameter.
+        if "create" in inspect.signature(ydoc_api.get_document).parameters:
+            kwargs["create"] = True
+        # Materialize the room -> the provider emits the real `initialize` room
+        # event -> the ChatManager forwards it, caches the YChat, and emits OPENED.
+        await ydoc_api.get_document(**kwargs)
+        assert await _pump_until(
+            lambda: manager.get(path) is not None
+        ), "ChatManager never resolved a YChat for the opened room"
+        key = next(rid for rid, p in manager._room_to_path.items() if p == path)
+    else:
+        # Exactly what WSChatHandler.open() calls for the first client; emits OPENED.
+        manager.ws_open(path)
+        key = path
+    # The OPENED event is handled by the router's async listener; wait until it
+    # has actually connected the chat (registering observe_messages) so message
+    # delivery is not racy.
+    assert await _pump_until(
+        lambda: key in router.active_chats
+    ), "router did not connect the chat after OPENED"
+    model = manager.get(path)
+    assert model is not None
+    assert router.active_chats.get(key) is model
+    if manager._rtc_enabled and model.dirty:
+        # A collaborative YChat is created ``dirty`` and (under jupyter_collaboration)
+        # only clears once the room performs its first save -- which is triggered
+        # by a post-ready document change. Nudge it with a metadata write (as a
+        # client does on open) so the doc settles to a loaded state; the
+        # observe_messages bridge intentionally ignores inserts while dirty.
+        model.set_metadata("_router_integration_ready", True)
+        assert await _pump_until(
+            lambda: not model.dirty, timeout=15.0
+        ), "collaborative YChat never settled (stayed dirty after a save nudge)"
+    return model, key
+
+
+def _deliver_client_message(app, model, body: str, sender: str = "human-int") -> None:
+    """Deliver a real client message through the real model pipeline."""
+    if _chat_manager(app)._rtc_enabled:
+        # In RTC mode the frontend writes directly to the shared doc; a non-bot
+        # sender is classified CLIENT_MSG_RECEIVED by YChat's real bridge.
+        model.add_message(NewMessage(body=body, sender=sender))
+    else:
+        # Exactly what WSChatHandler._handle_new_message emits on a client frame.
+        model._emit_message_event(
+            ChatMessageAction.CLIENT_MSG_RECEIVED,
+            Message(id=uuid.uuid4().hex, body=body, sender=sender, time=time()),
+        )
+
+
+async def _close_chat(app, path: str, key: str) -> None:
+    """Close the chat the way the server closes it (emits the real CLOSED event)."""
+    manager = _chat_manager(app)
+    if manager._rtc_enabled:
+        # Drive the real RTC forwarder with the provider's `clean` room event.
+        await manager._on_rtc_room_event(
+            None,
+            JUPYTER_COLLABORATION_EVENTS_URI,
+            {"room": key, "path": path, "action": "clean"},
+        )
+    else:
+        # Last client gone with no active writers -> the manager frees + emits CLOSED.
+        manager.ws_client_gone(path)
+
+
+def _chat_file(jp_root_dir, name: str) -> str:
+    (jp_root_dir / name).write_text('{"messages": [], "users": {}, "metadata": {}}')
+    return name
+
+
+# ===========================================================================
+# Environment sanity
+# ===========================================================================
+@pytest.mark.skipif(
+    not RTC_MATRIX, reason="provider expectation is only injected by the nox matrix"
+)
+def test_server_resolved_expected_provider(jp_serverapp):
+    from jupyterlab_chat.rtc_lib import get_server_session_rtc_info
+
+    info = get_server_session_rtc_info(jp_serverapp)
+    assert info.provider == EXPECTED_RTC_PROVIDER
+    assert _chat_manager(jp_serverapp)._rtc_enabled == (EXPECTED_RTC_PROVIDER is not None)
+
+
+# ===========================================================================
+# The three observers, end-to-end, with a real ChatManager-provided model
+# ===========================================================================
+def test_router_subscribes_at_boot(jp_serverapp, jp_asyncio_loop):
+    jp_asyncio_loop.run_until_complete(_wait_router_subscribed(jp_serverapp))
+
+
+def test_init_message_stop_observers(jp_serverapp, jp_asyncio_loop, jp_root_dir):
+    app = jp_serverapp
+    router = _router(app)
+    init, msg, stop = _Recorder(), _Recorder(), _Recorder()
+    router.observe_chat_init(init)
+    router.observe_chat_stop(stop)
+    path = _chat_file(jp_root_dir, "router-lifecycle.chat")
+    body = f"hello from a real client {uuid.uuid4().hex}"
+
+    async def scenario():
+        await _wait_router_subscribed(app)
+
+        # INIT
+        model, key = await _open_chat(app, path)
+        assert await _pump_until(lambda: any(init.calls)), "init observer did not fire"
+        assert init.calls[0][0] == key
+        assert init.calls[0][1] is model
+        assert router.active_chats.get(key) is model
+
+        # MESSAGE
+        router.observe_chat_msg(key, msg)
+        _deliver_client_message(app, model, body)
+        assert await _pump_until(lambda: any(msg.calls)), "msg observer did not fire"
+        assert msg.calls[0][0] == key
+        assert msg.calls[0][1].body == body
+
+        # STOP
+        await _close_chat(app, path, key)
+        assert await _pump_until(lambda: any(stop.calls)), "stop observer did not fire"
+        assert stop.calls[0][0] == key
+        assert key not in router.active_chats
+
+    jp_asyncio_loop.run_until_complete(scenario())
+
+
+def test_slash_command_observer(jp_serverapp, jp_asyncio_loop, jp_root_dir):
+    app = jp_serverapp
+    router = _router(app)
+    slash = _Recorder()
+    path = _chat_file(jp_root_dir, "router-slash.chat")
+
+    async def scenario():
+        await _wait_router_subscribed(app)
+        model, key = await _open_chat(app, path)
+        router.observe_slash_cmd_msg(key, "help", slash)
+        _deliver_client_message(app, model, "/help topic")
+        assert await _pump_until(lambda: any(slash.calls)), "slash observer did not fire"
+        room, command, trimmed = slash.calls[0]
+        assert room == key
+        assert command == "help"
+        assert trimmed.body == "topic"
+
+    jp_asyncio_loop.run_until_complete(scenario())
+
+
+def test_disconnect_unobserves_real_model(jp_serverapp, jp_asyncio_loop, jp_root_dir):
+    app = jp_serverapp
+    router = _router(app)
+    path = _chat_file(jp_root_dir, "router-disconnect.chat")
+
+    async def scenario():
+        await _wait_router_subscribed(app)
+        model, key = await _open_chat(app, path)
+        assert key in router.active_chats
+        assert key in router.message_observers
+
+        router.disconnect_chat(key)
+        assert key not in router.active_chats
+        assert key not in router.message_observers
+        assert key not in router._connected_at
+        # A message delivered after disconnect must not be routed.
+        rec = _Recorder()
+        router.observe_chat_msg(key, rec)
+        _deliver_client_message(app, model, "after disconnect")
+        await asyncio.sleep(0.1)
+        assert not rec.calls
+
+    jp_asyncio_loop.run_until_complete(scenario())
+
+
+def test_pre_existing_messages_not_routed(jp_serverapp, jp_asyncio_loop, jp_root_dir):
+    """Messages predating the connection (loaded from disk) must be skipped."""
+    app = jp_serverapp
+    router = _router(app)
+    rec = _Recorder()
+    path = _chat_file(jp_root_dir, "router-preexisting.chat")
+
+    async def scenario():
+        await _wait_router_subscribed(app)
+        _model, key = await _open_chat(app, path)
+        router.observe_chat_msg(key, rec)
+
+        connected_at = router._connected_at[key]
+        old = Message(id="old", body="old", sender="u", time=connected_at - 60)
+        new = Message(id="new", body="new", sender="u", time=connected_at + 1)
+        # Drive the router's real message handler with real events on the real
+        # connected room.
+        router._on_message_event(
+            key, ChatMessageEvent(ChatMessageAction.CLIENT_MSG_RECEIVED, old)
+        )
+        router._on_message_event(
+            key, ChatMessageEvent(ChatMessageAction.CLIENT_MSG_RECEIVED, new)
+        )
+        assert [c[1].body for c in rec.calls] == ["new"]
+
+    jp_asyncio_loop.run_until_complete(scenario())
+
+
+def test_only_client_messages_routed(jp_serverapp, jp_asyncio_loop, jp_root_dir):
+    """Server-sent / edited events must be ignored; only CLIENT_MSG_RECEIVED routes."""
+    app = jp_serverapp
+    router = _router(app)
+    rec = _Recorder()
+    path = _chat_file(jp_root_dir, "router-clientonly.chat")
+
+    async def scenario():
+        await _wait_router_subscribed(app)
+        _model, key = await _open_chat(app, path)
+        router.observe_chat_msg(key, rec)
+        t = router._connected_at[key] + 1
+        msg = Message(id="1", body="x", sender="u", time=t)
+        for action in (
+            ChatMessageAction.SERVER_MSG_SENT,
+            ChatMessageAction.SERVER_MSG_UPDATED,
+            ChatMessageAction.CLIENT_MSG_EDITED,
+        ):
+            router._on_message_event(key, ChatMessageEvent(action, msg))
+        assert not rec.calls
+        router._on_message_event(
+            key, ChatMessageEvent(ChatMessageAction.CLIENT_MSG_RECEIVED, msg)
+        )
+        assert len(rec.calls) == 1
+
+    jp_asyncio_loop.run_until_complete(scenario())
+
+
+def test_stop_observer_fires_on_real_ws_disconnect(
+    jp_serverapp, jp_asyncio_loop, jp_ws_fetch, jp_root_dir
+):
+    """A real client disconnect must fire observe_chat_stop (issue #47).
+
+    Unlike the lifecycle test (which asks the ChatManager to close the chat),
+    this drives the *origination* end-to-end: a real WebSocket client connects to
+    the jupyterlab_chat handler and then disconnects, with no manual ChatManager
+    calls. The handler's ``on_close`` -> ``ws_client_gone`` -> ``_free(CLOSED)``
+    must reach the router and fire the stop observer.
+
+    RTC-free only: the plain WS chat endpoint exists only when RTC is off, and
+    real RTC room teardown ("clean") is emitted internally by the collaboration
+    provider (covered by the reaction test, not driven by a client here).
+    """
+    app = jp_serverapp
+    if _chat_manager(app)._rtc_enabled:
+        pytest.skip("WS chat endpoint exists only RTC-free; RTC 'clean' is provider-internal")
+    router = _router(app)
+    stop = _Recorder()
+    router.observe_chat_stop(stop)
+    path = _chat_file(jp_root_dir, "router-realstop.chat")
+
+    async def scenario():
+        await _wait_router_subscribed(app)
+        # Real client connects -> ws_open -> OPENED -> router connects.
+        ws = await jp_ws_fetch("api", "jupyter-chat", "ws", params={"path": path})
+        assert await _pump_until(
+            lambda: path in router.active_chats
+        ), "router did not connect the chat on a real ws open"
+        # Real client disconnects -> on_close -> ws_client_gone -> _free(CLOSED).
+        ws.close()
+        assert await _pump_until(
+            lambda: any(stop.calls)
+        ), "observe_chat_stop did not fire on a real ws disconnect"
+        assert stop.calls[0][0] == path
+        assert path not in router.active_chats
+
+    jp_asyncio_loop.run_until_complete(scenario())
+
+
+def test_cleanup_clears_router(jp_serverapp, jp_asyncio_loop, jp_root_dir):
+    """``cleanup`` disconnects every active chat and clears all observers."""
+    app = jp_serverapp
+    router = _router(app)
+    router.observe_chat_init(_Recorder())
+    path = _chat_file(jp_root_dir, "router-cleanup.chat")
+
+    async def scenario():
+        await _wait_router_subscribed(app)
+        _model, key = await _open_chat(app, path)
+        router.observe_chat_msg(key, _Recorder())
+        router.observe_slash_cmd_msg(key, "help", _Recorder())
+        assert key in router.active_chats
+
+        router.cleanup()
+
+        assert not router.active_chats
+        assert not router.chat_init_observers
+        assert not router.chat_stop_observers
+        assert not router.chat_msg_observers
+        assert not router.slash_cmd_observers
+
+    jp_asyncio_loop.run_until_complete(scenario())
