@@ -73,18 +73,14 @@ class RouterExtension(ExtensionApp):
         # `chat_id` (chat.get_id()) is the transport-neutral source of truth the
         # ChatManager stamps on every event -- including CLOSED/DELETED, which
         # `chat_id` (chat.get_id()) is the transport-neutral source of truth the
-        # ChatManager stamps on every event -- including CLOSED/DELETED, which
-        # fire after the model is freed. It is the ChatManager's registry key, so
-        # we both fetch the model and route by it. `path` is display-only here;
-        # `room_id` is an RTC transport detail and is not sent.
-        chat_id = data.get("chat_id")
+        # ChatManager stamps on *every* lifecycle event (it is required by the
+        # room/v1 schema, so jupyter_events won't emit an event without it). It
+        # is the ChatManager's registry key, so we both fetch the model and route
+        # by it. `path` is display-only here; `room_id` is not sent.
+        chat_id = data["chat_id"]
 
         if action == ChatEventAction.OPENED.value:
             self.log.info(f"New chat detected: {path} (id={chat_id})")
-
-            if chat_id is None:
-                self.log.error(f"OPENED event for {path} carried no chat_id")
-                return
 
             # Retrieve the chat model from the ChatManager by its stable chat id.
             chat = self._get_chat(chat_id)
@@ -97,15 +93,11 @@ class RouterExtension(ExtensionApp):
 
         elif action == ChatEventAction.CLOSED.value:
             self.log.info(f"Chat closed: {path} (id={chat_id})")
-            if chat_id is None:
-                return
             self.router.disconnect_chat(chat_id)
             self.router._notify_chat_stop_observers(chat_id)
 
         elif action == ChatEventAction.DELETED.value:
             self.log.info(f"Chat deleted: {path} (id={chat_id})")
-            if chat_id is None:
-                return
             self.router.disconnect_chat(chat_id)
             self.router._notify_chat_stop_observers(chat_id)
 
