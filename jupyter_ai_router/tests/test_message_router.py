@@ -671,19 +671,22 @@ async def _open_chat(app, path: str):
         if "create" in inspect.signature(ydoc_api.get_document).parameters:
             kwargs["create"] = True
         # Materialize the room -> the provider emits the real `initialize` room
-        # event -> the ChatManager forwards it, caches the YChat, and emits OPENED.
-        await ydoc_api.get_document(**kwargs)
+        # event -> the ChatManager forwards it, caches the YChat (by chat id),
+        # and emits OPENED. `get_document(copy=False)` returns that same YChat.
+        model = await ydoc_api.get_document(**kwargs)
+        assert model is not None
+        key = model.get_id()
         assert await _pump_until(
-            lambda: manager.get(path) is not None
-        ), "ChatManager never resolved a YChat for the opened room"
+            lambda: manager.get(key) is not None
+        ), "ChatManager never cached the YChat for the opened room"
     else:
-        # Exactly what WSChatHandler.open() calls for the first client; emits OPENED.
-        manager.ws_open(path)
+        # Exactly what WSChatHandler.open() calls for the first client; emits
+        # OPENED. ws_open returns the live model.
+        model = manager.ws_open(path)
+        assert model is not None
+        key = model.get_id()
     # The router keys active chats on the transport-neutral chat id (chat.get_id()),
     # not the transport room id / path.
-    model = manager.get(path)
-    assert model is not None
-    key = model.get_id()
     # The OPENED event is handled by the router's async listener; wait until it
     # has actually connected the chat (registering observe_messages) so message
     # delivery is not racy.
@@ -718,22 +721,22 @@ def _deliver_client_message(app, model, body: str, sender: str = "human-int") ->
         )
 
 
-async def _close_chat(app, path: str) -> None:
+async def _close_chat(app, path: str, chat_id: str) -> None:
     """Close the chat the way the server closes it (emits the real CLOSED event)."""
     manager = _chat_manager(app)
     if manager._rtc_enabled:
         # Drive the real RTC forwarder with the provider's `clean` room event.
-        # Lifecycle events carry the transport room id, not the chat id, so
-        # resolve it back from the path.
-        room_id = next(rid for rid, p in manager._room_to_path.items() if p == path)
+        # The handler resolves the chat by its `path`, so any guard-passing room
+        # id (``{format}:chat:{id}``) works here.
         await manager._on_rtc_room_event(
             None,
             JUPYTER_COLLABORATION_EVENTS_URI,
-            {"room": room_id, "path": path, "action": "clean"},
+            {"room": "json:chat:integration", "path": path, "action": "clean"},
         )
     else:
-        # Last client gone with no active writers -> the manager frees + emits CLOSED.
-        manager.ws_client_gone(path)
+        # Last client gone with no active writers -> the manager frees + emits
+        # CLOSED. The manager keys on the chat id.
+        manager.ws_client_gone(chat_id)
 
 
 def _chat_file(jp_root_dir, name: str) -> str:
@@ -789,7 +792,7 @@ def test_init_message_stop_observers(jp_serverapp, jp_asyncio_loop, jp_root_dir)
         assert msg.calls[0][1].body == body
 
         # STOP
-        await _close_chat(app, path)
+        await _close_chat(app, path, key)
         assert await _pump_until(lambda: any(stop.calls)), "stop observer did not fire"
         assert stop.calls[0][0] == key
         assert key not in router.active_chats
@@ -923,16 +926,13 @@ def test_stop_observer_fires_on_real_ws_disconnect(
 
     async def scenario():
         await _wait_router_subscribed(app)
-        # Real client connects -> ws_open -> OPENED -> router connects.
+        # Real client connects -> ws_open -> OPENED -> router connects. The
+        # router keys on the transport-neutral chat id; grab it once connected.
         ws = await jp_ws_fetch("api", "jupyter-chat", "ws", params={"path": path})
         assert await _pump_until(
-            lambda: _chat_manager(app).get(path) is not None
-        ), "ChatManager never resolved a model on a real ws open"
-        # The router keys on the transport-neutral chat id, not the path.
-        chat_id = _chat_manager(app).get(path).get_id()
-        assert await _pump_until(
-            lambda: chat_id in router.active_chats
+            lambda: len(router.active_chats) == 1
         ), "router did not connect the chat on a real ws open"
+        chat_id = next(iter(router.active_chats))
         # Real client disconnects -> on_close -> ws_client_gone -> _free(CLOSED).
         ws.close()
         assert await _pump_until(
