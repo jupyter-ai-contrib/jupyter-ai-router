@@ -4,7 +4,8 @@ import time
 from typing import TYPE_CHECKING
 
 from jupyter_server.extension.application import ExtensionApp
-from jupyterlab_chat.events import ChatEventAction, ChatManager
+from jupyterlab_chat.chat_manager import ChatManager
+from jupyterlab_chat.events import ChatEventAction
 
 from jupyter_ai_router.handlers import RouteHandler
 
@@ -33,12 +34,6 @@ class RouterExtension(ExtensionApp):
 
         # Create MessageRouter instance
         self.router = MessageRouter(parent=self)
-
-        # Maps a chat's path (the canonical id on every lifecycle event) to its
-        # transport-neutral chat id (chat.get_id()). CLOSED/DELETED events fire
-        # after the model is freed, so we record the id at OPENED time to resolve
-        # them. `room_id` on the event is an RTC-only detail and is never used.
-        self._chat_ids_by_path: dict[str, str] = {}
 
         # Make router available to other extensions
         if "jupyter-ai" not in self.settings:
@@ -75,9 +70,18 @@ class RouterExtension(ExtensionApp):
         """Handle chat lifecycle events from the ChatManager."""
         action = data.get("action")
         path = data.get("path", "")
+        # `chat_id` (chat.get_id()) is the transport-neutral source of truth the
+        # ChatManager stamps on every event -- including CLOSED/DELETED, which
+        # fire after the model is freed. `path` is only used to fetch the live
+        # model on OPENED. `room_id` is an RTC transport detail and is not sent.
+        chat_id = data.get("chat_id")
 
         if action == ChatEventAction.OPENED.value:
-            self.log.info(f"New chat detected: {path}")
+            self.log.info(f"New chat detected: {path} (id={chat_id})")
+
+            if chat_id is None:
+                self.log.error(f"OPENED event for {path} carried no chat_id")
+                return
 
             # Retrieve the chat model from ChatManager
             chat = self._get_chat(path)
@@ -85,24 +89,18 @@ class RouterExtension(ExtensionApp):
                 self.log.error(f"Failed to get chat model for {path}")
                 return
 
-            # Key the router on the transport-neutral chat id.
-            chat_id = chat.get_id()
-            self._chat_ids_by_path[path] = chat_id
-
-            # Connect chat to router
+            # Connect chat to router, keyed on the transport-neutral chat id.
             self.router.connect_chat(chat_id, chat)
 
         elif action == ChatEventAction.CLOSED.value:
-            self.log.info(f"Chat closed: {path}")
-            chat_id = self._chat_ids_by_path.pop(path, None)
+            self.log.info(f"Chat closed: {path} (id={chat_id})")
             if chat_id is None:
                 return
             self.router.disconnect_chat(chat_id)
             self.router._notify_chat_stop_observers(chat_id)
 
         elif action == ChatEventAction.DELETED.value:
-            self.log.info(f"Chat deleted: {path}")
-            chat_id = self._chat_ids_by_path.pop(path, None)
+            self.log.info(f"Chat deleted: {path} (id={chat_id})")
             if chat_id is None:
                 return
             self.router.disconnect_chat(chat_id)
