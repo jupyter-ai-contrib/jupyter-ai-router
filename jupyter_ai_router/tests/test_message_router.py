@@ -658,8 +658,8 @@ async def _open_chat(app, path: str):
     live ``ChatManager``.
 
     ``model`` is a real ``WsChatModel`` (RTC-free) or ``YChat`` (RTC). ``key`` is
-    the identifier the router uses in ``active_chats`` (room id under RTC, else
-    the path).
+    the identifier the router uses in ``active_chats`` -- the transport-neutral
+    chat id (``model.get_id()``), regardless of transport.
     """
     manager = _chat_manager(app)
     router = _router(app)
@@ -676,19 +676,20 @@ async def _open_chat(app, path: str):
         assert await _pump_until(
             lambda: manager.get(path) is not None
         ), "ChatManager never resolved a YChat for the opened room"
-        key = next(rid for rid, p in manager._room_to_path.items() if p == path)
     else:
         # Exactly what WSChatHandler.open() calls for the first client; emits OPENED.
         manager.ws_open(path)
-        key = path
+    # The router keys active chats on the transport-neutral chat id (chat.get_id()),
+    # not the transport room id / path.
+    model = manager.get(path)
+    assert model is not None
+    key = model.get_id()
     # The OPENED event is handled by the router's async listener; wait until it
     # has actually connected the chat (registering observe_messages) so message
     # delivery is not racy.
     assert await _pump_until(
         lambda: key in router.active_chats
     ), "router did not connect the chat after OPENED"
-    model = manager.get(path)
-    assert model is not None
     assert router.active_chats.get(key) is model
     if manager._rtc_enabled and model.dirty:
         # A collaborative YChat is created ``dirty`` and (under jupyter_collaboration)
@@ -717,15 +718,18 @@ def _deliver_client_message(app, model, body: str, sender: str = "human-int") ->
         )
 
 
-async def _close_chat(app, path: str, key: str) -> None:
+async def _close_chat(app, path: str) -> None:
     """Close the chat the way the server closes it (emits the real CLOSED event)."""
     manager = _chat_manager(app)
     if manager._rtc_enabled:
         # Drive the real RTC forwarder with the provider's `clean` room event.
+        # Lifecycle events carry the transport room id, not the chat id, so
+        # resolve it back from the path.
+        room_id = next(rid for rid, p in manager._room_to_path.items() if p == path)
         await manager._on_rtc_room_event(
             None,
             JUPYTER_COLLABORATION_EVENTS_URI,
-            {"room": key, "path": path, "action": "clean"},
+            {"room": room_id, "path": path, "action": "clean"},
         )
     else:
         # Last client gone with no active writers -> the manager frees + emits CLOSED.
@@ -785,7 +789,7 @@ def test_init_message_stop_observers(jp_serverapp, jp_asyncio_loop, jp_root_dir)
         assert msg.calls[0][1].body == body
 
         # STOP
-        await _close_chat(app, path, key)
+        await _close_chat(app, path)
         assert await _pump_until(lambda: any(stop.calls)), "stop observer did not fire"
         assert stop.calls[0][0] == key
         assert key not in router.active_chats
@@ -922,15 +926,20 @@ def test_stop_observer_fires_on_real_ws_disconnect(
         # Real client connects -> ws_open -> OPENED -> router connects.
         ws = await jp_ws_fetch("api", "jupyter-chat", "ws", params={"path": path})
         assert await _pump_until(
-            lambda: path in router.active_chats
+            lambda: _chat_manager(app).get(path) is not None
+        ), "ChatManager never resolved a model on a real ws open"
+        # The router keys on the transport-neutral chat id, not the path.
+        chat_id = _chat_manager(app).get(path).get_id()
+        assert await _pump_until(
+            lambda: chat_id in router.active_chats
         ), "router did not connect the chat on a real ws open"
         # Real client disconnects -> on_close -> ws_client_gone -> _free(CLOSED).
         ws.close()
         assert await _pump_until(
             lambda: any(stop.calls)
         ), "observe_chat_stop did not fire on a real ws disconnect"
-        assert stop.calls[0][0] == path
-        assert path not in router.active_chats
+        assert stop.calls[0][0] == chat_id
+        assert chat_id not in router.active_chats
 
     jp_asyncio_loop.run_until_complete(scenario())
 

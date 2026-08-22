@@ -34,6 +34,12 @@ class RouterExtension(ExtensionApp):
         # Create MessageRouter instance
         self.router = MessageRouter(parent=self)
 
+        # Maps a ChatManager room_id (the transport-level identifier carried on
+        # lifecycle events) to the transport-neutral chat id (chat.get_id()).
+        # CLOSED/DELETED events carry no chat model, so we record the mapping at
+        # OPENED time to translate them back to a chat id.
+        self._chat_ids_by_room: dict[str, str] = {}
+
         # Make router available to other extensions
         if "jupyter-ai" not in self.settings:
             self.settings["jupyter-ai"] = {}
@@ -80,18 +86,28 @@ class RouterExtension(ExtensionApp):
                 self.log.error(f"Failed to get chat model for {room_id}")
                 return
 
+            # Key the router on the transport-neutral chat id, not the room id.
+            chat_id = chat.get_id()
+            self._chat_ids_by_room[room_id] = chat_id
+
             # Connect chat to router
-            self.router.connect_chat(room_id, chat)
+            self.router.connect_chat(chat_id, chat)
 
         elif action == ChatEventAction.CLOSED.value:
             self.log.info(f"Chat closed: {room_id}")
-            self.router.disconnect_chat(room_id)
-            self.router._notify_chat_stop_observers(room_id)
+            chat_id = self._chat_ids_by_room.pop(room_id, None)
+            if chat_id is None:
+                return
+            self.router.disconnect_chat(chat_id)
+            self.router._notify_chat_stop_observers(chat_id)
 
         elif action == ChatEventAction.DELETED.value:
             self.log.info(f"Chat deleted: {room_id}")
-            self.router.disconnect_chat(room_id)
-            self.router._notify_chat_stop_observers(room_id)
+            chat_id = self._chat_ids_by_room.pop(room_id, None)
+            if chat_id is None:
+                return
+            self.router.disconnect_chat(chat_id)
+            self.router._notify_chat_stop_observers(chat_id)
 
     def _get_chat(self, room_id: str) -> BaseChatModel | None:
         """
