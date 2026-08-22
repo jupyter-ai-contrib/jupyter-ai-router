@@ -72,8 +72,11 @@ class RouterExtension(ExtensionApp):
         path = data.get("path", "")
         # `chat_id` (chat.get_id()) is the transport-neutral source of truth the
         # ChatManager stamps on every event -- including CLOSED/DELETED, which
-        # fire after the model is freed. `path` is only used to fetch the live
-        # model on OPENED. `room_id` is an RTC transport detail and is not sent.
+        # `chat_id` (chat.get_id()) is the transport-neutral source of truth the
+        # ChatManager stamps on every event -- including CLOSED/DELETED, which
+        # fire after the model is freed. It is the ChatManager's registry key, so
+        # we both fetch the model and route by it. `path` is display-only here;
+        # `room_id` is an RTC transport detail and is not sent.
         chat_id = data.get("chat_id")
 
         if action == ChatEventAction.OPENED.value:
@@ -83,10 +86,10 @@ class RouterExtension(ExtensionApp):
                 self.log.error(f"OPENED event for {path} carried no chat_id")
                 return
 
-            # Retrieve the chat model from ChatManager
-            chat = self._get_chat(path)
+            # Retrieve the chat model from the ChatManager by its stable chat id.
+            chat = self._get_chat(chat_id)
             if chat is None:
-                self.log.error(f"Failed to get chat model for {path}")
+                self.log.error(f"Failed to get chat model for {chat_id}")
                 return
 
             # Connect chat to router, keyed on the transport-neutral chat id.
@@ -106,9 +109,9 @@ class RouterExtension(ExtensionApp):
             self.router.disconnect_chat(chat_id)
             self.router._notify_chat_stop_observers(chat_id)
 
-    def _get_chat(self, path: str) -> BaseChatModel | None:
+    def _get_chat(self, chat_id: str) -> BaseChatModel | None:
         """
-        Get the chat model for a path using the ChatManager.
+        Get the chat model for a stable chat id using the ChatManager.
 
         The ChatManager handles the transport difference internally:
         - RTC mode: resolves the YChat from the collaboration provider
@@ -119,7 +122,7 @@ class RouterExtension(ExtensionApp):
             self.log.error("ChatManager not available in settings")
             return None
 
-        return chat_manager.get(path)
+        return chat_manager.get(chat_id)
 
     async def stop_extension(self):
         """Clean up router when extension stops."""
