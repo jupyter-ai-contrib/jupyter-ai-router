@@ -4,7 +4,8 @@ import time
 from typing import TYPE_CHECKING
 
 from jupyter_server.extension.application import ExtensionApp
-from jupyterlab_chat.events import ChatEventAction, ChatManager
+from jupyterlab_chat.chat_manager import ChatManager
+from jupyterlab_chat.events import ChatEventAction
 
 from jupyter_ai_router.handlers import RouteHandler
 
@@ -69,33 +70,40 @@ class RouterExtension(ExtensionApp):
         """Handle chat lifecycle events from the ChatManager."""
         action = data.get("action")
         path = data.get("path", "")
-        room_id = data.get("room_id") or path
+        # `chat_id` (chat.get_id()) is the transport-neutral source of truth the
+        # ChatManager stamps on every event -- including CLOSED/DELETED, which
+        # `chat_id` (chat.get_id()) is the transport-neutral source of truth the
+        # ChatManager stamps on *every* lifecycle event (it is required by the
+        # room/v1 schema, so jupyter_events won't emit an event without it). It
+        # is the ChatManager's registry key, so we both fetch the model and route
+        # by it. `path` is display-only here; `room_id` is not sent.
+        chat_id = data["chat_id"]
 
         if action == ChatEventAction.OPENED.value:
-            self.log.info(f"New chat detected: {room_id}")
+            self.log.info(f"New chat detected: {path} (id={chat_id})")
 
-            # Retrieve the chat model from ChatManager
-            chat = self._get_chat(room_id)
+            # Retrieve the chat model from the ChatManager by its stable chat id.
+            chat = self._get_chat(chat_id)
             if chat is None:
-                self.log.error(f"Failed to get chat model for {room_id}")
+                self.log.error(f"Failed to get chat model for {chat_id}")
                 return
 
-            # Connect chat to router
-            self.router.connect_chat(room_id, chat)
+            # Connect chat to router, keyed on the transport-neutral chat id.
+            self.router.connect_chat(chat_id, chat)
 
         elif action == ChatEventAction.CLOSED.value:
-            self.log.info(f"Chat closed: {room_id}")
-            self.router.disconnect_chat(room_id)
-            self.router._notify_chat_stop_observers(room_id)
+            self.log.info(f"Chat closed: {path} (id={chat_id})")
+            self.router.disconnect_chat(chat_id)
+            self.router._notify_chat_stop_observers(chat_id)
 
         elif action == ChatEventAction.DELETED.value:
-            self.log.info(f"Chat deleted: {room_id}")
-            self.router.disconnect_chat(room_id)
-            self.router._notify_chat_stop_observers(room_id)
+            self.log.info(f"Chat deleted: {path} (id={chat_id})")
+            self.router.disconnect_chat(chat_id)
+            self.router._notify_chat_stop_observers(chat_id)
 
-    def _get_chat(self, room_id: str) -> BaseChatModel | None:
+    def _get_chat(self, chat_id: str) -> BaseChatModel | None:
         """
-        Get the chat model for a room/path using the ChatManager.
+        Get the chat model for a stable chat id using the ChatManager.
 
         The ChatManager handles the transport difference internally:
         - RTC mode: resolves the YChat from the collaboration provider
@@ -106,7 +114,7 @@ class RouterExtension(ExtensionApp):
             self.log.error("ChatManager not available in settings")
             return None
 
-        return chat_manager.get(room_id)
+        return chat_manager.get(chat_id)
 
     async def stop_extension(self):
         """Clean up router when extension stops."""

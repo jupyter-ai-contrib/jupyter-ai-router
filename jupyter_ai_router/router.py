@@ -77,7 +77,7 @@ class MessageRouter(LoggingConfigurable):
         Register a callback for when new chats are initialized.
 
         Args:
-            callback: Function called with (room_id: str, chat: BaseChatModel) when chat connects
+            callback: Function called with (chat_id: str, chat: BaseChatModel) when chat connects
         """
         self.chat_init_observers.append(callback)
         self.log.info("Registered new chat initialization callback")
@@ -88,104 +88,104 @@ class MessageRouter(LoggingConfigurable):
         (freed from memory).
 
         Args:
-            callback: Function called with (room_id: str) when the room is stopped.
+            callback: Function called with (chat_id: str) when the room is stopped.
         """
         self.chat_stop_observers.append(callback)
         self.log.info("Registered chat stop callback")
 
     def observe_slash_cmd_msg(
-        self, room_id: str, command_pattern: str, callback: Callable[[str, str, Message], Any]
+        self, chat_id: str, command_pattern: str, callback: Callable[[str, str, Message], Any]
     ) -> None:
         """
         Register a callback for when specific slash commands are received.
 
         Args:
-            room_id: The chat room ID
+            chat_id: The chat ID (chat.get_id())
             command_pattern: Regex pattern to match commands (without leading slash).
                 Examples:
                 - Exact match: "help" matches "/help"
                 - Pattern match: "ai-.*" matches "/ai-generate", "/ai-review", etc.
                 - Multiple options: "export-(json|csv)" matches "/export-json", "/export-csv"
-            callback: Function called with (room_id: str, command: str, message: Message) for matching commands
+            callback: Function called with (chat_id: str, command: str, message: Message) for matching commands
         """
-        if room_id not in self.slash_cmd_observers:
-            self.slash_cmd_observers[room_id] = {}
+        if chat_id not in self.slash_cmd_observers:
+            self.slash_cmd_observers[chat_id] = {}
 
-        if command_pattern not in self.slash_cmd_observers[room_id]:
-            self.slash_cmd_observers[room_id][command_pattern] = []
+        if command_pattern not in self.slash_cmd_observers[chat_id]:
+            self.slash_cmd_observers[chat_id][command_pattern] = []
 
-        self.slash_cmd_observers[room_id][command_pattern].append(callback)
+        self.slash_cmd_observers[chat_id][command_pattern].append(callback)
         self.log.info(f"Registered slash command callback for pattern: {command_pattern}")
 
     def observe_chat_msg(
-        self, room_id: str, callback: Callable[[str, Message], Any]
+        self, chat_id: str, callback: Callable[[str, Message], Any]
     ) -> None:
         """
         Register a callback for when regular (non-slash) messages are received.
 
         Args:
-            callback: Function called with (room_id: str, message: Message) for regular messages
+            callback: Function called with (chat_id: str, message: Message) for regular messages
         """
-        if room_id not in self.chat_msg_observers:
-            self.chat_msg_observers[room_id] = []
+        if chat_id not in self.chat_msg_observers:
+            self.chat_msg_observers[chat_id] = []
 
-        self.chat_msg_observers[room_id].append(callback)
+        self.chat_msg_observers[chat_id].append(callback)
         self.log.info("Registered message callback")
 
-    def connect_chat(self, room_id: str, chat: BaseChatModel) -> None:
+    def connect_chat(self, chat_id: str, chat: BaseChatModel) -> None:
         """
         Connect a new chat session to the router.
 
         Args:
-            room_id: Unique identifier for the chat room
+            chat_id: Unique identifier for the chat (chat.get_id())
             chat: BaseChatModel instance for the room
         """
-        if room_id in self.active_chats:
-            self.log.warning(f"Chat {room_id} already connected to router")
+        if chat_id in self.active_chats:
+            self.log.warning(f"Chat {chat_id} already connected to router")
             return
 
-        self.active_chats[room_id] = chat
+        self.active_chats[chat_id] = chat
 
         # Record the current time so we can distinguish pre-existing messages
         # (loaded from disk after this point) from genuinely new messages.
-        self._connected_at[room_id] = time()
+        self._connected_at[chat_id] = time()
 
         # Set up message observer using the transport-neutral API
-        callback = partial(self._on_message_event, room_id)
+        callback = partial(self._on_message_event, chat_id)
         observer = chat.observe_messages(callback)
-        self.message_observers[room_id] = observer
+        self.message_observers[chat_id] = observer
 
-        self.log.info(f"Connected chat {room_id} to router")
+        self.log.info(f"Connected chat {chat_id} to router")
 
         # Notify new chat observers
-        self._notify_chat_init_observers(room_id, chat)
+        self._notify_chat_init_observers(chat_id, chat)
 
-    def disconnect_chat(self, room_id: str) -> None:
+    def disconnect_chat(self, chat_id: str) -> None:
         """
         Disconnect a chat session from the router.
 
         Args:
-            room_id: Unique identifier for the chat room
+            chat_id: Unique identifier for the chat (chat.get_id())
         """
-        if room_id not in self.active_chats:
+        if chat_id not in self.active_chats:
             return
 
         # Remove message observer
-        if room_id in self.message_observers:
-            chat = self.active_chats[room_id]
+        if chat_id in self.message_observers:
+            chat = self.active_chats[chat_id]
             try:
-                chat.unobserve_messages(self.message_observers[room_id])
+                chat.unobserve_messages(self.message_observers[chat_id])
             except Exception as e:
-                self.log.warning(f"Failed to unobserve chat {room_id}: {e}")
-            del self.message_observers[room_id]
+                self.log.warning(f"Failed to unobserve chat {chat_id}: {e}")
+            del self.message_observers[chat_id]
 
-        del self.active_chats[room_id]
-        self.slash_cmd_observers.pop(room_id, None)
-        self.chat_msg_observers.pop(room_id, None)
-        self._connected_at.pop(room_id, None)
-        self.log.info(f"Disconnected chat {room_id} from router")
+        del self.active_chats[chat_id]
+        self.slash_cmd_observers.pop(chat_id, None)
+        self.chat_msg_observers.pop(chat_id, None)
+        self._connected_at.pop(chat_id, None)
+        self.log.info(f"Disconnected chat {chat_id} from router")
 
-    def _on_message_event(self, room_id: str, event: ChatMessageEvent) -> None:
+    def _on_message_event(self, chat_id: str, event: ChatMessageEvent) -> None:
         """Handle incoming message events from a chat model.
 
         Only routes new messages received from clients (human users).
@@ -198,18 +198,18 @@ class MessageRouter(LoggingConfigurable):
         message = event.message
 
         # Skip messages that predate this connection (loaded from disk).
-        connected_at = self._connected_at.get(room_id, 0)
+        connected_at = self._connected_at.get(chat_id, 0)
         if message.time < connected_at:
             return
 
-        self._route_message(room_id, message)
+        self._route_message(chat_id, message)
 
-    def _route_message(self, room_id: str, message: Message) -> None:
+    def _route_message(self, chat_id: str, message: Message) -> None:
         """
         Route an incoming message to appropriate observers.
 
         Args:
-            room_id: The chat room ID
+            chat_id: The chat ID (chat.get_id())
             message: The message to route
         """
 
@@ -233,20 +233,20 @@ class MessageRouter(LoggingConfigurable):
 
             # Route to slash command observers; fall through to regular message
             # observers when no registered pattern matches
-            handled = self._notify_slash_cmd_observers(room_id, trimmed_message, clean_command)
+            handled = self._notify_slash_cmd_observers(chat_id, trimmed_message, clean_command)
             if not handled:
-                self._notify_msg_observers(room_id, message)
+                self._notify_msg_observers(chat_id, message)
         else:
-            self._notify_msg_observers(room_id, message)
+            self._notify_msg_observers(chat_id, message)
 
-    def _notify_slash_cmd_observers(self, room_id: str, message: Message, clean_command: str) -> bool:
+    def _notify_slash_cmd_observers(self, chat_id: str, message: Message, clean_command: str) -> bool:
         """
         Notify observers registered for slash commands.
 
         Returns:
             True if at least one observer matched.
         """
-        room_observers = self.slash_cmd_observers.get(room_id, {})
+        room_observers = self.slash_cmd_observers.get(chat_id, {})
         matched = False
 
         for registered_pattern, callbacks in room_observers.items():
@@ -254,45 +254,45 @@ class MessageRouter(LoggingConfigurable):
                 matched = True
                 for callback in callbacks:
                     try:
-                        callback(room_id, clean_command, message)
+                        callback(chat_id, clean_command, message)
                     except Exception as e:
                         self.log.error(f"Slash command observer error for pattern '{registered_pattern}': {e}")
 
         return matched
 
-    def _notify_chat_init_observers(self, room_id: str, chat: BaseChatModel) -> None:
+    def _notify_chat_init_observers(self, chat_id: str, chat: BaseChatModel) -> None:
         """Notify all new chat observers."""
         for callback in self.chat_init_observers:
             try:
-                callback(room_id, chat)
+                callback(chat_id, chat)
             except Exception as e:
-                self.log.error(f"New chat observer error for {room_id}: {e}")
+                self.log.error(f"New chat observer error for {chat_id}: {e}")
 
-    def _notify_chat_stop_observers(self, room_id: str) -> None:
+    def _notify_chat_stop_observers(self, chat_id: str) -> None:
         """Notify all chat stop observers."""
         for callback in self.chat_stop_observers:
             try:
-                callback(room_id)
+                callback(chat_id)
             except Exception as e:
-                self.log.error(f"Chat stop observer error for {room_id}: {e}")
+                self.log.error(f"Chat stop observer error for {chat_id}: {e}")
 
-    def _notify_msg_observers(self, room_id: str, message: Message) -> None:
+    def _notify_msg_observers(self, chat_id: str, message: Message) -> None:
         """Notify all message observers."""
-        callbacks = self.chat_msg_observers.get(room_id, [])
+        callbacks = self.chat_msg_observers.get(chat_id, [])
         for callback in callbacks:
             try:
-                callback(room_id, message)
+                callback(chat_id, message)
             except Exception as e:
-                self.log.error(f"Message observer error for {room_id}: {e}")
+                self.log.error(f"Message observer error for {chat_id}: {e}")
 
     def cleanup(self) -> None:
         """Clean up router resources."""
         self.log.info("Cleaning up MessageRouter...")
 
         # Disconnect all chats
-        room_ids = list(self.active_chats.keys())
-        for room_id in room_ids:
-            self.disconnect_chat(room_id)
+        chat_ids = list(self.active_chats.keys())
+        for chat_id in chat_ids:
+            self.disconnect_chat(chat_id)
 
         # Clear callbacks
         self.chat_init_observers.clear()
