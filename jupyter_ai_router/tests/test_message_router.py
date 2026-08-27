@@ -18,6 +18,7 @@ from pathlib import Path
 from time import time
 from typing import Any, Callable
 from unittest.mock import Mock
+from urllib.parse import quote
 
 import pytest
 
@@ -928,7 +929,10 @@ def test_stop_observer_fires_on_real_ws_disconnect(
         await _wait_router_subscribed(app)
         # Real client connects -> ws_open -> OPENED -> router connects. The
         # router keys on the transport-neutral chat id; grab it once connected.
-        ws = await jp_ws_fetch("api", "jupyter-chat", "ws", params={"path": path})
+        # jupyterlab_chat serves the RTC-free chat socket at
+        # ``/api/chat/ws/<url-encoded path>`` -- the chat path is a URL segment,
+        # not a ``?path=`` query param (jupyterlab_chat >= 0.25.0rc0).
+        ws = await jp_ws_fetch("api", "chat", "ws", quote(path, safe=""))
         assert await _pump_until(
             lambda: len(router.active_chats) == 1
         ), "router did not connect the chat on a real ws open"
