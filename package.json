@@ -1,6 +1,6 @@
 {
     "name": "@jupyter-ai/router",
-    "version": "0.1.0-a1",
+    "version": "0.1.0-rc0",
     "description": "Core routing layer of Jupyter AI",
     "keywords": [
         "jupyter",
