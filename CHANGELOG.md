@@ -2,6 +2,35 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## 0.1.0
+
+([Full Changelog](https://github.com/jupyter-ai-contrib/jupyter-ai-router/compare/v0.0.7...30fafa119ab0556a50d735b529fff2db928f306e))
+
+### Enhancements made
+
+- Route chats by chat.get_id() instead of transport room id [#51](https://github.com/jupyter-ai-contrib/jupyter-ai-router/pull/51) ([@dlqqq](https://github.com/dlqqq))
+- Add server integration test matrix [#50](https://github.com/jupyter-ai-contrib/jupyter-ai-router/pull/50) ([@dlqqq](https://github.com/dlqqq))
+- Decouple router from YChat and RTC providers [#46](https://github.com/jupyter-ai-contrib/jupyter-ai-router/pull/46) ([@bhavana-nair](https://github.com/bhavana-nair), [@dlqqq](https://github.com/dlqqq))
+
+### Maintenance and upkeep improvements
+
+- Bump jupyterlab-chat to v0.25.0rc0 [#52](https://github.com/jupyter-ai-contrib/jupyter-ai-router/pull/52) ([@dlqqq](https://github.com/dlqqq))
+
+### Other merged PRs
+
+- Group Dependabot npm updates into a single PR [#49](https://github.com/jupyter-ai-contrib/jupyter-ai-router/pull/49) ([@srdas](https://github.com/srdas))
+
+### Contributors to this release
+
+The following people contributed discussions, new ideas, code and documentation contributions, and review.
+See [our definition of contributors](https://github-activity.readthedocs.io/en/latest/use/#how-does-this-tool-define-contributions-in-the-reports).
+
+([GitHub contributors page for this release](https://github.com/jupyter-ai-contrib/jupyter-ai-router/graphs/contributors?from=2026-08-08&to=2026-09-02&type=c))
+
+@bhavana-nair ([activity](https://github.com/search?q=repo%3Ajupyter-ai-contrib%2Fjupyter-ai-router+involves%3Abhavana-nair+updated%3A2026-08-08..2026-09-02&type=Issues)) | @dlqqq ([activity](https://github.com/search?q=repo%3Ajupyter-ai-contrib%2Fjupyter-ai-router+involves%3Adlqqq+updated%3A2026-08-08..2026-09-02&type=Issues)) | @srdas ([activity](https://github.com/search?q=repo%3Ajupyter-ai-contrib%2Fjupyter-ai-router+involves%3Asrdas+updated%3A2026-08-08..2026-09-02&type=Issues))
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## 0.1.0rc0
 
 ([Full Changelog](https://github.com/jupyter-ai-contrib/jupyter-ai-router/compare/v0.1.0a1...30fafa119ab0556a50d735b529fff2db928f306e))
@@ -18,8 +47,6 @@ See [our definition of contributors](https://github-activity.readthedocs.io/en/l
 ([GitHub contributors page for this release](https://github.com/jupyter-ai-contrib/jupyter-ai-router/graphs/contributors?from=2026-08-22&to=2026-08-27&type=c))
 
 @dlqqq ([activity](https://github.com/search?q=repo%3Ajupyter-ai-contrib%2Fjupyter-ai-router+involves%3Adlqqq+updated%3A2026-08-22..2026-08-27&type=Issues))
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## 0.1.0a1
 
