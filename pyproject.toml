@@ -28,7 +28,7 @@ classifiers = [
 ]
 dependencies = [
     "jupyter_server>=2.4.0,<3",
-    "jupyterlab-chat>=0.25.0rc0",
+    "jupyterlab-chat>=0.25.0",
 ]
 dynamic = ["version", "description", "authors", "urls", "keywords"]
 
