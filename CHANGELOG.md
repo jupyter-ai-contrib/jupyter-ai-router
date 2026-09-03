@@ -2,6 +2,25 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## 0.1.1
+
+([Full Changelog](https://github.com/jupyter-ai-contrib/jupyter-ai-router/compare/v0.1.0...5c0c230c9872c99ca58a82d993d760639463a438))
+
+### Maintenance and upkeep improvements
+
+- Bump to Jupyter Chat v0.25.0 official [#54](https://github.com/jupyter-ai-contrib/jupyter-ai-router/pull/54) ([@dlqqq](https://github.com/dlqqq))
+
+### Contributors to this release
+
+The following people contributed discussions, new ideas, code and documentation contributions, and review.
+See [our definition of contributors](https://github-activity.readthedocs.io/en/latest/use/#how-does-this-tool-define-contributions-in-the-reports).
+
+([GitHub contributors page for this release](https://github.com/jupyter-ai-contrib/jupyter-ai-router/graphs/contributors?from=2026-09-02&to=2026-09-03&type=c))
+
+@dlqqq ([activity](https://github.com/search?q=repo%3Ajupyter-ai-contrib%2Fjupyter-ai-router+involves%3Adlqqq+updated%3A2026-09-02..2026-09-03&type=Issues))
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## 0.1.0
 
 ([Full Changelog](https://github.com/jupyter-ai-contrib/jupyter-ai-router/compare/v0.0.7...30fafa119ab0556a50d735b529fff2db928f306e))
@@ -28,8 +47,6 @@ See [our definition of contributors](https://github-activity.readthedocs.io/en/l
 ([GitHub contributors page for this release](https://github.com/jupyter-ai-contrib/jupyter-ai-router/graphs/contributors?from=2026-08-08&to=2026-09-02&type=c))
 
 @bhavana-nair ([activity](https://github.com/search?q=repo%3Ajupyter-ai-contrib%2Fjupyter-ai-router+involves%3Abhavana-nair+updated%3A2026-08-08..2026-09-02&type=Issues)) | @dlqqq ([activity](https://github.com/search?q=repo%3Ajupyter-ai-contrib%2Fjupyter-ai-router+involves%3Adlqqq+updated%3A2026-08-08..2026-09-02&type=Issues)) | @srdas ([activity](https://github.com/search?q=repo%3Ajupyter-ai-contrib%2Fjupyter-ai-router+involves%3Asrdas+updated%3A2026-08-08..2026-09-02&type=Issues))
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## 0.1.0rc0
 
