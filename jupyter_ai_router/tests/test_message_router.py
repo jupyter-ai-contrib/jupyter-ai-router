@@ -134,6 +134,24 @@ class TestMessageRouter:
         assert room_id in self.router.message_observers
         assert len(self.mock_chat._message_observers) == 1
 
+    def test_connect_chat_rewires_recreated_chat(self):
+        """A new model for the same room should replace the stale connection."""
+        room_id = "test-room"
+        replacement_chat = _make_real_chat(self._tmp.name)
+        stop_callback = Mock()
+        self.router.observe_chat_init(self.mock_chat_init_callback)
+        self.router.observe_chat_stop(stop_callback)
+
+        self.router.connect_chat(room_id, self.mock_chat)
+        self.router.connect_chat(room_id, replacement_chat)
+
+        assert self.router.active_chats[room_id] is replacement_chat
+        assert len(self.mock_chat._message_observers) == 0
+        assert len(replacement_chat._message_observers) == 1
+        stop_callback.assert_called_once_with(room_id)
+        assert self.mock_chat_init_callback.call_count == 2
+        assert self.mock_chat_init_callback.call_args.args == (room_id, replacement_chat)
+
     def test_disconnect_chat(self):
         """Test disconnecting a chat from the router."""
         room_id = "test-room"

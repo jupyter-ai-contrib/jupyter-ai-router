@@ -141,8 +141,12 @@ class MessageRouter(LoggingConfigurable):
             chat: BaseChatModel instance for the room
         """
         if chat_id in self.active_chats:
-            self.log.warning(f"Chat {chat_id} already connected to router")
-            return
+            if self.active_chats[chat_id] is chat:
+                self.log.warning(f"Chat {chat_id} already connected to router")
+                return
+            self.log.warning(f"Chat {chat_id} reconnected with a new chat; rewiring router")
+            self.disconnect_chat(chat_id)
+            self._notify_chat_stop_observers(chat_id)
 
         self.active_chats[chat_id] = chat
 
