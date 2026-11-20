@@ -2,6 +2,25 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## 0.1.2
+
+([Full Changelog](https://github.com/jupyter-ai-contrib/jupyter-ai-router/compare/v0.1.1...4f717bcac2168572eccd3e5ec76732d5433a42b3))
+
+### Bugs fixed
+
+- Remove the health check request from the frontend plugin [#56](https://github.com/jupyter-ai-contrib/jupyter-ai-router/pull/56) ([@jtpio](https://github.com/jtpio), [@brichet](https://github.com/brichet))
+
+### Contributors to this release
+
+The following people contributed discussions, new ideas, code and documentation contributions, and review.
+See [our definition of contributors](https://github-activity.readthedocs.io/en/latest/use/#how-does-this-tool-define-contributions-in-the-reports).
+
+([GitHub contributors page for this release](https://github.com/jupyter-ai-contrib/jupyter-ai-router/graphs/contributors?from=2026-09-03&to=2026-11-20&type=c))
+
+@brichet ([activity](https://github.com/search?q=repo%3Ajupyter-ai-contrib%2Fjupyter-ai-router+involves%3Abrichet+updated%3A2026-09-03..2026-11-20&type=Issues)) | @jtpio ([activity](https://github.com/search?q=repo%3Ajupyter-ai-contrib%2Fjupyter-ai-router+involves%3Ajtpio+updated%3A2026-09-03..2026-11-20&type=Issues))
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## 0.1.1
 
 ([Full Changelog](https://github.com/jupyter-ai-contrib/jupyter-ai-router/compare/v0.1.0...5c0c230c9872c99ca58a82d993d760639463a438))
@@ -18,8 +37,6 @@ See [our definition of contributors](https://github-activity.readthedocs.io/en/l
 ([GitHub contributors page for this release](https://github.com/jupyter-ai-contrib/jupyter-ai-router/graphs/contributors?from=2026-09-02&to=2026-09-03&type=c))
 
 @dlqqq ([activity](https://github.com/search?q=repo%3Ajupyter-ai-contrib%2Fjupyter-ai-router+involves%3Adlqqq+updated%3A2026-09-02..2026-09-03&type=Issues))
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## 0.1.0
 
